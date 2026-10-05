@@ -1,0 +1,16 @@
+.gradle/
+build/
+local.properties
+keystore.properties
+*.jks
+*.apk
+.idea/
+# Credenciales y claves: nunca al repositorio
+cre.askPas
+*.askPas
+release.jks
+keystore.properties
+# Analizador
+analyzer/.venv/
+analyzer/cache/
+__pycache__/

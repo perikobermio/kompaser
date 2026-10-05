@@ -1,0 +1,30 @@
+# Postgres + PostgREST (API REST automática sobre la tabla songs).
+#   sudo docker compose up -d
+#   adb reverse tcp:3000 tcp:3000   # el móvil por USB ve la API en http://localhost:3000
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: kompaser
+      POSTGRES_USER: kompaser
+      POSTGRES_PASSWORD: kompaser
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "127.0.0.1:5434:5432"   # 5432 y 5433 ya están ocupados en el host
+
+  api:
+    image: postgrest/postgrest:v12.2.3
+    restart: unless-stopped
+    depends_on: [db]
+    environment:
+      PGRST_DB_URI: postgres://kompaser:kompaser@db:5432/kompaser
+      PGRST_DB_SCHEMAS: public
+      PGRST_DB_ANON_ROLE: web_anon
+    ports:
+      - "3000:3000"
+
+volumes:
+  pgdata:
