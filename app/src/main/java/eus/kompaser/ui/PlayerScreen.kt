@@ -123,6 +123,7 @@ fun PlayerScreen(
 	val clock = remember { Clock() }
 	val video = remember { VideoSync() }
 	val metronome = remember { Metronome() }
+	var videoClockStarted by remember { mutableStateOf(false) }
 	var notice by remember { mutableStateOf<String?>(null) }
 	var timelineMode by remember { mutableStateOf(store.timelineMode) }
 	var selected by remember { mutableStateOf<Int?>(null) }
@@ -144,27 +145,7 @@ fun PlayerScreen(
 		}
 	}
 
-	val vt = song.videoTimes
-
-	/** Posición (en pulsos) para un segundo del vídeo: por los tiempos del analizador si los hay, si no por el tempo. */
-	fun beatAtVideo(sec: Double): Double {
-		if (vt == null || events.isEmpty()) return (sec * 1000 - song.videoOffsetMs) / 60_000.0 * bpm
-		if (sec < vt[0]) return (sec - vt[0]) / 60.0 * bpm
-		var lo = 0
-		var hi = events.size - 1
-		while (lo < hi) {
-			val mid = (lo + hi + 1) / 2
-			if (vt[mid] <= sec) lo = mid else hi = mid - 1
-		}
-		val span = (vt[lo + 1] - vt[lo]).coerceAtLeast(1e-3)
-		return starts[lo] + ((sec - vt[lo]) / span).coerceAtMost(1.0) * events[lo].beats + (sec - vt[events.size]).coerceAtLeast(0.0) / 60.0 * bpm
-	}
-
-	fun beatNow(now: Long): Double = when {
-		videoOn -> beatAtVideo(video.seconds(now))
-		playing -> clock.beat + (now - clock.nanos) / 60e9 * bpm
-		else -> beat
-	}
+	fun beatNow(now: Long): Double = if (playing) clock.beat + (now - clock.nanos) / 60e9 * bpm else beat
 
 	fun play() {
 		if (videoOn) {
@@ -180,26 +161,50 @@ fun PlayerScreen(
 	}
 
 	fun pause() {
+		beat = beatNow(System.nanoTime())
+		playing = false
 		if (videoOn) {
 			video.player?.pause()
 			return
 		}
-		beat = beatNow(System.nanoTime())
-		playing = false
 	}
 
 	fun seek(i: Int) {
 		if (events.isEmpty()) return
-		val b = starts[i.coerceIn(0, events.size - 1)]
+		val index = i.coerceIn(0, events.size - 1)
+		val b = starts[index]
 		if (videoOn) {
-			val sec = (vt?.get(i.coerceIn(0, events.size - 1)) ?: (song.videoOffsetMs / 1000.0 + b * 60.0 / bpm)).toFloat().coerceAtLeast(0f)
+			// El reloj del reproductor es el BPM: los tiempos individuales marcados no deben desplazar el vídeo.
+			val sec = (song.videoOffsetMs / 1000.0 + b * 60.0 / bpm).toFloat().coerceAtLeast(0f)
 			video.player?.seekTo(sec)
 			video.update(sec, force = true)
-		} else {
-			clock.beat = b
-			clock.nanos = System.nanoTime()
+			videoClockStarted = true
 		}
+		clock.beat = b
+		clock.nanos = System.nanoTime()
 		beat = b
+	}
+
+	// El vídeo controla play/pause, pero el metrónomo y los cambios de acorde avanzan con el reloj BPM.
+	LaunchedEffect(videoOn, video.playing) {
+		if (!videoOn) return@LaunchedEffect
+		val now = System.nanoTime()
+		if (video.playing) {
+			if (!videoClockStarted) {
+				val firstChord = song.videoOffsetMs / 1000.0
+				beat = (video.seconds(now) - firstChord) / 60.0 * bpm
+				videoClockStarted = true
+			}
+			if (!playing) {
+				clock.beat = beat
+				clock.nanos = now
+				playing = true
+				if (metronomeOn) metronome.click(Math.floorMod(floor(beat).toInt(), bpb) == 0)
+			}
+		} else if (playing) {
+			beat = beatNow(now)
+			playing = false
+		}
 	}
 
 	/** Doble toque en un acorde: empieza un tiempo antes; triple: un tiempo después. Se guarda al momento. */
@@ -224,20 +229,20 @@ fun PlayerScreen(
 	}
 
 	val running = if (videoOn) video.playing else playing
-	LaunchedEffect(videoOn, playing) {
-		if (!videoOn && !playing) return@LaunchedEffect
+	LaunchedEffect(playing) {
+		if (!playing) return@LaunchedEffect
 		var last = floor(beatNow(System.nanoTime())).toInt()
 		while (isActive) withFrameNanos { now ->
 			val b = beatNow(now)
 			val bi = floor(b).toInt()
 			if (bi != last) {
-				val on = if (videoOn) video.playing else playing
-				if (on && metronomeOn && b < total) metronome.click(Math.floorMod(bi, bpb) == 0)
+				if (metronomeOn && b < total) metronome.click(Math.floorMod(bi, bpb) == 0)
 				last = bi
 			}
-			if (!videoOn && b >= total) {
+			if (b >= total) {
 				playing = false
 				beat = total
+				if (videoOn) video.player?.pause()
 			} else beat = b
 		}
 	}
@@ -371,6 +376,7 @@ fun PlayerScreen(
 			TimelinePlayer(
 				song, beat, if (started) idx else null, selected, m,
 				onSelect = { selected = it },
+				onSeek = ::seek,
 				onMove = { i, d -> nudge(i, d) },
 				onInsert = { i, at, chord ->
 					saveEvents(Timeline.split(events, i, at, chord, 60.0 / bpm))
@@ -746,7 +752,7 @@ fun tuningLabel(tuning: String): String {
 @Composable
 private fun TimelinePlayer(
 	song: Song, beat: Double, nowIndex: Int?, selected: Int?, modifier: Modifier,
-	onSelect: (Int) -> Unit, onMove: (Int, Float) -> Unit, onInsert: (Int, Float, String) -> Unit,
+	onSelect: (Int) -> Unit, onSeek: (Int) -> Unit, onMove: (Int, Float) -> Unit, onInsert: (Int, Float, String) -> Unit,
 ) {
 	val events = song.events
 	val starts = song.starts
@@ -768,11 +774,12 @@ private fun TimelinePlayer(
 			val rowStart = first?.let { starts[it] } ?: 0.0
 			val rowEnd = blocks.lastOrNull()?.let { starts[it.index + 1] } ?: rowStart
 			val inRow = beat >= rowStart && beat < rowEnd
-			val t = first?.let { events[it].t }
+			val t = first?.takeIf { song.youtubeId != null }?.let { song.videoOffsetMs / 1000.0 + starts[it] * 60.0 / song.bpm }
 			TimelineRow(
 				song.lines[li], blocks, rowStart = rowStart, beatsPerBar = song.beatsPerBar, selected = selected,
 				timeLabel = t?.let { "%d:%02d".format((it / 60).toInt(), (it % 60).toInt()) },
 				onSelect = onSelect, onMove = onMove, onInsert = onInsert,
+				onBlockTap = onSeek, longPressEnabled = false,
 				nowIndex = if (inRow) nowIndex else null, playhead = if (inRow) beat else null,
 				// Todo lo anterior al acorde que suena queda iluminado.
 				playedBefore = nowIndex,

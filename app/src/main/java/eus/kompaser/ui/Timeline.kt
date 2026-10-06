@@ -178,6 +178,8 @@ fun TimelineRow(
 	dimUnmarked: Boolean = false,
 	onLongPress: ((Int) -> Unit)? = null,
 	dragBlocks: Boolean = false,
+	onBlockTap: ((Int) -> Unit)? = null,
+	longPressEnabled: Boolean = true,
 ) {
 	Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
 		line.section?.let { Text(it, color = Fun.Purple, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelLarge) }
@@ -242,6 +244,7 @@ fun TimelineRow(
 						e, i, x, scale, scalePx, selected == i, onSelect, onMove, onInsert,
 						played = playedBefore != null && i < playedBefore,
 						editable = editable, showMarks = showMarks, dimUnmarked = dimUnmarked, onLongPress = onLongPress,
+						onBlockTap = onBlockTap, longPressEnabled = longPressEnabled,
 
 						// Parte ya sonada del bloque actual (0 → 1).
 						progress = if (nowIndex == i && playhead != null) (((playhead - rowStart) - x) / e.beats).toFloat().coerceIn(0f, 1f) else null,
@@ -261,6 +264,7 @@ private fun Block(
 	played: Boolean = false, progress: Float? = null,
 	editable: Boolean = true, showMarks: Boolean = false, dimUnmarked: Boolean = false,
 	onLongPress: ((Int) -> Unit)? = null, dragBlock: Boolean = false,
+	onBlockTap: ((Int) -> Unit)? = null, longPressEnabled: Boolean = true,
 ) {
 	var menuAt by remember { mutableStateOf<Float?>(null) }
 	val move by rememberUpdatedState(onMove)
@@ -271,12 +275,14 @@ private fun Block(
 			.then(if (isSelected) Modifier.border(2.5.dp, Fun.Coral, RoundedCornerShape(8.dp)) else Modifier)
 			.pointerInput(i) {
 				detectTapGestures(
-					onTap = { onSelect(i) },
+					onTap = { onBlockTap?.invoke(i) ?: onSelect(i) },
 					onLongPress = { p ->
-						if (onLongPress != null) onLongPress(i)
-						else {
-							onSelect(i)
-							if (editable) menuAt = ((p.x / scalePx) * 2).roundToInt() / 2f
+						if (longPressEnabled) {
+							if (onLongPress != null) onLongPress(i)
+							else {
+								onSelect(i)
+								if (editable) menuAt = ((p.x / scalePx) * 2).roundToInt() / 2f
+							}
 						}
 					},
 				)
