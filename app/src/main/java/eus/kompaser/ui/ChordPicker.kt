@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
@@ -35,7 +36,10 @@ private val TYPES = listOf("" to "mayor", "m" to "m", "7" to "7", "m7" to "m7", 
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun ChordPicker(songChords: List<String>, initial: String?, onDismiss: () -> Unit, onPick: (String) -> Unit) {
+fun ChordPicker(
+	songChords: List<String>, initial: String?, onDismiss: () -> Unit, onPick: (String) -> Unit, onDelete: (() -> Unit)? = null,
+	header: (@Composable () -> Unit)? = null,
+) {
 	var root by remember { mutableStateOf<String?>(null) }
 	var type by remember { mutableStateOf("") }
 	AlertDialog(
@@ -43,6 +47,7 @@ fun ChordPicker(songChords: List<String>, initial: String?, onDismiss: () -> Uni
 		title = { Text(if (initial == null || initial == UNKNOWN_CHORD) "¿Qué acorde es?" else "Cambiar $initial por…") },
 		text = {
 			Column(Modifier.verticalScroll(rememberScrollState())) {
+				header?.invoke()
 				Text("De esta canción", style = MaterialTheme.typography.labelLarge)
 				FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
 					for (c in songChords) SuggestionChip(onClick = { onPick(c) }, label = { Text(c, fontWeight = FontWeight.Bold, fontSize = 18.sp) })
@@ -61,6 +66,11 @@ fun ChordPicker(songChords: List<String>, initial: String?, onDismiss: () -> Uni
 				Text(root?.let { "Usar ${it + type}" } ?: "Elige nota")
 			}
 		},
-		dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
+		dismissButton = {
+			Row {
+				if (onDelete != null) TextButton(onClick = onDelete) { Text("Suprimir") }
+				TextButton(onClick = onDismiss) { Text("Cancelar") }
+			}
+		},
 	)
 }

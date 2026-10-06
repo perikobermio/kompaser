@@ -140,7 +140,7 @@ class MainActivity : ComponentActivity() {
 						TapScreen(song, onBack = { screen = s.back }, onSave = {
 							save(it)
 							screen = s.back
-						})
+						}, onSaveStay = ::save)
 					} ?: LaunchedEffect(s) { screen = Screen.List }
 				}
 

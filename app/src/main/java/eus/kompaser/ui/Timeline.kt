@@ -47,7 +47,10 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
@@ -74,6 +77,9 @@ import kotlin.math.roundToInt
 object Timeline {
 	const val MIN = 0.5f
 
+	/** La duración más corta posible: una semifusa (1/16 de tiempo en compases de x/4). */
+	const val FINE = 1f / 16
+
 	/** Mueve el inicio del acorde [i] [d] pulsos (negativo = antes). */
 	fun moveStart(evs: List<ChordEvent>, i: Int, d: Float, secPerBeat: Double): List<ChordEvent> {
 		val cur = evs.getOrNull(i) ?: return evs
@@ -98,6 +104,25 @@ object Timeline {
 		return out
 	}
 
+	/**
+	 * Deja los tiempos coherentes sin mover lo que ya está colocado: rellena los que faltan (siguiendo la
+	 * duración del anterior), evita que un acorde empiece antes que el anterior y recalcula las duraciones
+	 * a partir de los tiempos. Así cada marca solo cambia lo que tiene al lado.
+	 */
+	fun normalize(evs: List<ChordEvent>, secPerBeat: Double, offset: Double): List<ChordEvent> {
+		if (evs.isEmpty()) return evs
+		val n = evs.size
+		val t = DoubleArray(n)
+		for (k in 0 until n) {
+			t[k] = evs[k].t ?: if (k == 0) offset else t[k - 1] + evs[k - 1].beats * secPerBeat
+			if (k > 0 && t[k] < t[k - 1] + FINE * secPerBeat) t[k] = t[k - 1] + FINE * secPerBeat
+		}
+		return evs.mapIndexed { k, e ->
+			val b = if (k < n - 1) (((t[k + 1] - t[k]) / secPerBeat * 16).roundToInt() / 16f).coerceAtLeast(FINE) else e.beats
+			e.copy(t = t[k].coerceAtLeast(0.0), beats = b)
+		}
+	}
+
 	/** Parte el bloque [i] en el pulso [at] (desde su inicio) e inserta ahí [chord] ("" = pausa). */
 	fun split(evs: List<ChordEvent>, i: Int, at: Float, chord: String, secPerBeat: Double): List<ChordEvent> {
 		val cur = evs.getOrNull(i) ?: return evs
@@ -112,7 +137,15 @@ object Timeline {
 
 internal fun isTabLine(s: String) = "|-" in s || "-|" in s || Regex("""^\s*[A-Ga-g][#b]?\|""").containsMatchIn(s)
 
-private fun fmtBeats(x: Float) = if (x % 1f == 0f) x.toInt().toString() else "%.1f".format(x)
+private fun fmtBeats(x: Float) = when {
+	x % 1f == 0f -> x.toInt().toString()
+	x == 0.5f -> "½"
+	x == 0.25f -> "¼"
+	x == 0.125f -> "⅛"
+	x == 0.0625f -> "1/16"
+	(x * 2) % 1f == 0f -> "%.1f".format(x)
+	else -> "%.2f".format(x).trimEnd('0')
+}
 
 private fun blockColor(e: ChordEvent): Color = when {
 	e.chord == UNKNOWN_CHORD -> Fun.Pink.copy(alpha = 0.55f)
@@ -140,6 +173,11 @@ fun TimelineRow(
 	nowIndex: Int? = null,
 	playhead: Double? = null,
 	playedBefore: Int? = null,
+	editable: Boolean = true,
+	showMarks: Boolean = false,
+	dimUnmarked: Boolean = false,
+	onLongPress: ((Int) -> Unit)? = null,
+	dragBlocks: Boolean = false,
 ) {
 	Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
 		line.section?.let { Text(it, color = Fun.Purple, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelLarge) }
@@ -161,7 +199,32 @@ fun TimelineRow(
 			val density = LocalDensity.current
 			val scalePx = with(density) { scale.toPx() }
 			Box(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
-			Box(Modifier.width(scale * rowBeats).height(46.dp)) {
+			// Arrastrar un bloque: el gesto se detecta en la fila (que no se mueve bajo el dedo, y recibe el gesto
+			// después del bloque tocado); al empezar se mira qué bloque hay debajo y su inicio se mueve de pulso en pulso.
+			val currentBlocks by rememberUpdatedState(blocks)
+			val dragMove by rememberUpdatedState(onMove)
+			val rowDrag = if (!dragBlocks) Modifier else Modifier.pointerInput(Unit) {
+				var target = -1
+				var acc = 0f
+				detectHorizontalDragGestures(
+					onDragStart = { p ->
+						acc = 0f
+						var x0 = 0f
+						target = -1
+						for ((i, e) in currentBlocks) {
+							if (p.x / scalePx < x0 + e.beats) { target = i; break }
+							x0 += e.beats
+						}
+					},
+				) { change, dx ->
+					if (target < 0) return@detectHorizontalDragGestures
+					change.consume()
+					acc += dx
+					while (acc >= scalePx) { dragMove(target, 1f); acc -= scalePx }
+					while (acc <= -scalePx) { dragMove(target, -1f); acc += scalePx }
+				}
+			}
+			Box(Modifier.width(scale * rowBeats).height(46.dp).then(rowDrag)) {
 				// Rejilla: un trazo por pulso, más marcado en cada compás.
 				val grid = MaterialTheme.colorScheme.outline
 				Canvas(Modifier.fillMaxSize()) {
@@ -178,6 +241,8 @@ fun TimelineRow(
 					Block(
 						e, i, x, scale, scalePx, selected == i, onSelect, onMove, onInsert,
 						played = playedBefore != null && i < playedBefore,
+						editable = editable, showMarks = showMarks, dimUnmarked = dimUnmarked, onLongPress = onLongPress,
+
 						// Parte ya sonada del bloque actual (0 → 1).
 						progress = if (nowIndex == i && playhead != null) (((playhead - rowStart) - x) / e.beats).toFloat().coerceIn(0f, 1f) else null,
 					)
@@ -194,19 +259,25 @@ private fun Block(
 	e: ChordEvent, i: Int, startBeats: Float, scale: Dp, scalePx: Float, isSelected: Boolean,
 	onSelect: (Int) -> Unit, onMove: (Int, Float) -> Unit, onInsert: (Int, Float, String) -> Unit,
 	played: Boolean = false, progress: Float? = null,
+	editable: Boolean = true, showMarks: Boolean = false, dimUnmarked: Boolean = false,
+	onLongPress: ((Int) -> Unit)? = null, dragBlock: Boolean = false,
 ) {
 	var menuAt by remember { mutableStateOf<Float?>(null) }
 	val move by rememberUpdatedState(onMove)
 	Box(
 		Modifier.offset(x = scale * startBeats).width(scale * e.beats).fillMaxHeight().padding(horizontal = 1.dp, vertical = 3.dp)
+			.alpha(if (dimUnmarked && !e.manual) 0.45f else 1f)
 			.clip(RoundedCornerShape(8.dp)).background(blockColor(e))
 			.then(if (isSelected) Modifier.border(2.5.dp, Fun.Coral, RoundedCornerShape(8.dp)) else Modifier)
 			.pointerInput(i) {
 				detectTapGestures(
 					onTap = { onSelect(i) },
 					onLongPress = { p ->
-						onSelect(i)
-						menuAt = ((p.x / scalePx) * 2).roundToInt() / 2f
+						if (onLongPress != null) onLongPress(i)
+						else {
+							onSelect(i)
+							if (editable) menuAt = ((p.x / scalePx) * 2).roundToInt() / 2f
+						}
 					},
 				)
 			},
@@ -225,9 +296,13 @@ private fun Block(
 			fmtBeats(e.beats), Modifier.align(Alignment.BottomEnd).padding(end = 4.dp),
 			fontSize = 8.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
 		)
+		// Punto en los marcados a mano.
+		if (showMarks && e.manual) Box(
+			Modifier.align(Alignment.TopStart).padding(start = 6.dp, top = 4.dp).size(7.dp).clip(CircleShape).background(Fun.Purple),
+		)
 		// Asa para arrastrar el inicio del acorde.
 		var acc by remember { mutableFloatStateOf(0f) }
-		Box(
+		if (editable) Box(
 			Modifier.align(Alignment.CenterStart).width(14.dp).fillMaxHeight()
 				.pointerInput(i) {
 					detectHorizontalDragGestures(onDragStart = { acc = 0f; onSelect(i) }) { change, dx ->

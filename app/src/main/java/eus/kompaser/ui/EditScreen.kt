@@ -196,6 +196,7 @@ fun EditScreen(song: Song, onBack: () -> Unit, onTap: () -> Unit, onSave: (Song)
 					timeLabel = t?.let { "%d:%02d".format((it / 60).toInt(), (it % 60).toInt()) },
 					onSelect = { selected = it },
 					onMove = ::move,
+					showMarks = true,
 					onInsert = { i, at, chord ->
 						events = Timeline.split(events, i, at, chord, secPerBeat)
 						selected = i + 1

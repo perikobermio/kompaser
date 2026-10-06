@@ -26,18 +26,23 @@ data class ChordShape(val frets: List<Int>, val fingers: List<Int>, val barre: B
 /**
  * Un acorde en la secuencia de reproducción: dura [beats] tiempos y apunta a su posición en la letra.
  * Con [chord] vacío es una pausa (parón sin acordes); entonces [pos] es -1.
- * [t] es el segundo del vídeo en que empieza, si se ha calculado con el analizador.
+ * [t] es el segundo del vídeo en que empieza (analizador o marcado a mano); [manual] indica que ese
+ * tiempo lo marcó el usuario escuchando el vídeo.
  */
-data class ChordEvent(val chord: String, val beats: Float, val line: Int, val pos: Int, val t: Double? = null) {
+data class ChordEvent(
+	val chord: String, val beats: Float, val line: Int, val pos: Int, val t: Double? = null, val manual: Boolean = false,
+) {
 	val isRest: Boolean get() = chord.isEmpty()
 
 	fun toJson(): JSONObject = JSONObject().put("c", chord).put("b", beats.toDouble()).put("l", line).put("p", pos)
 		.also { o -> t?.let { o.put("t", it) } }
+		.also { o -> if (manual) o.put("m", true) }
 
 	companion object {
 		fun fromJson(o: JSONObject) = ChordEvent(
 			o.getString("c"), o.getDouble("b").toFloat(), o.getInt("l"), o.getInt("p"),
 			if (o.has("t") && !o.isNull("t")) o.getDouble("t") else null,
+			o.optBoolean("m"),
 		)
 	}
 }

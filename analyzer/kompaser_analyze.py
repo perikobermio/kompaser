@@ -266,7 +266,7 @@ def build_events(song, seq_idx, path, bpb, grid, times):
 			continue
 		g = gaps.get(k, 0)
 		bars = round(g / bpb)
-		base = {k2: v for k2, v in ev[i].items() if k2 != "t"}
+		base = {k2: v for k2, v in ev[i].items() if k2 not in ("t", "m")}  # tiempos calculados: ya no son marcas a mano
 		if bars >= 1:
 			items += [({**base, "t": round(t_chord[k], 3)}, n), ({"c": "", "l": ev[i]["l"], "p": -1, "t": round(t_gap[k], 3)}, bars * bpb)]
 		else:
