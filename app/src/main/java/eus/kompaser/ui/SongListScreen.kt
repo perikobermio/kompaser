@@ -2,7 +2,12 @@ package eus.kompaser.ui
 
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.blur
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -141,12 +146,24 @@ private fun SongRow(s: Song, onOpen: () -> Unit, onEdit: () -> Unit, onDelete: (
 		colors = CardDefaults.cardColors(containerColor = Color.White),
 		elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
 	) {
+		val thumb = rememberThumbnail(s.youtubeId)
+		Box(Modifier.fillMaxWidth().height(IntrinsicSize.Min)) {
+		// Fondo: la miniatura del vídeo, difuminada y casi transparente.
+		if (thumb != null) Image(
+			thumb, null, Modifier.matchParentSize().blur(2.dp).alpha(0.3f), contentScale = ContentScale.Crop,
+		)
 		Row(Modifier.height(IntrinsicSize.Min), verticalAlignment = Alignment.CenterVertically) {
 			Box(Modifier.width(8.dp).fillMaxHeight().background(accent))
+			// Afinación: la nota de la 6ª cuerda («Mi♭», «Mi», «Re»…).
 			Box(
 				Modifier.padding(start = 14.dp).size(48.dp).clip(CircleShape).background(accent.copy(alpha = 0.18f)),
 				contentAlignment = Alignment.Center,
-			) { Text(s.events.firstOrNull { !it.isRest }?.chord ?: "♪", color = accent, fontWeight = FontWeight.Black) }
+			) {
+				Text(
+					tuningNotes(s.tuning).split(Regex("\\s+")).firstOrNull().orEmpty().ifEmpty { "♪" },
+					color = accent, fontWeight = FontWeight.Black, fontSize = 15.sp, maxLines = 1,
+				)
+			}
 			Row(Modifier.padding(14.dp).weight(1f), verticalAlignment = Alignment.CenterVertically) {
 			Column(Modifier.weight(1f)) {
 				Text(s.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
@@ -169,6 +186,7 @@ private fun SongRow(s: Song, onOpen: () -> Unit, onEdit: () -> Unit, onDelete: (
 				DropdownMenuItem(text = { Text("Borrar") }, onClick = { menu = false; confirm = true })
 			}
 			}
+		}
 		}
 	}
 	if (confirm) AlertDialog(

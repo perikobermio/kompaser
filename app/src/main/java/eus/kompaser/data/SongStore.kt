@@ -18,6 +18,11 @@ class SongStore(context: Context) {
 		get() = prefs.getString("server", "").orEmpty()
 		set(v) = prefs.edit().putString("server", v.trim().trimEnd('/')).apply()
 
+	/** En el reproductor, ver la línea de tiempo en vez de las tarjetas y la letra. */
+	var timelineMode: Boolean
+		get() = prefs.getBoolean("timelineMode", false)
+		set(v) = prefs.edit().putBoolean("timelineMode", v).apply()
+
 	var metronome: Boolean
 		get() = prefs.getBoolean("metronome", true)
 		set(v) = prefs.edit().putBoolean("metronome", v).apply()

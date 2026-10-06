@@ -61,7 +61,10 @@ fun EditScreen(song: Song, onBack: () -> Unit, onTap: () -> Unit, onSave: (Song)
 	var title by remember { mutableStateOf(song.title) }
 	var artist by remember { mutableStateOf(song.artist) }
 	var bpm by remember { mutableStateOf(song.bpm.toInt().toString()) }
-	var capo by remember { mutableStateOf(song.capo.toString()) }
+	// Si la canción no está en afinación estándar, se propone la cejilla equivalente con afinación estándar.
+	val suggested = remember(song.id) { standardCapo(song.tuning, song.capo) }
+	var tuning by remember { mutableStateOf(if (suggested != null && suggested >= 0) "E A D G B E" else song.tuning) }
+	var capo by remember { mutableStateOf((if (suggested != null && suggested >= 0) suggested else song.capo).toString()) }
 	var beatsPerBar by remember { mutableStateOf(song.beatsPerBar) }
 	var yt by remember { mutableStateOf(song.youtubeId.orEmpty()) }
 	var offset by remember { mutableStateOf(fmtSec(song.videoOffsetMs / 1000.0)) }
@@ -82,6 +85,7 @@ fun EditScreen(song: Song, onBack: () -> Unit, onTap: () -> Unit, onSave: (Song)
 			title = title.trim(), artist = artist.trim(),
 			bpm = bpm.toFloatOrNull()?.coerceIn(30f, 260f) ?: song.bpm,
 			capo = capo.toIntOrNull()?.coerceIn(0, 12) ?: song.capo,
+			tuning = tuning,
 			beatsPerBar = beatsPerBar,
 			youtubeId = youtubeId(yt),
 			videoOffsetMs = (o * 1000).toLong(),
@@ -112,30 +116,12 @@ fun EditScreen(song: Song, onBack: () -> Unit, onTap: () -> Unit, onSave: (Song)
 		bottomBar = {
 			selected?.let { i -> events.getOrNull(i) }?.let { e ->
 				val i = selected!!
-				Surface(tonalElevation = 6.dp, shadowElevation = 8.dp) {
-					Row(
-						Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 8.dp, vertical = 6.dp),
-						verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp),
-					) {
-						Column(Modifier.width(64.dp)) {
-							Text(if (e.isRest) "pausa" else e.chord, fontWeight = FontWeight.Black, maxLines = 1)
-							TextButton(onClick = { step = if (step == 1f) 0.5f else 1f }, contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)) {
-								Text(if (step == 1f) "paso 1" else "paso ½", style = MaterialTheme.typography.labelSmall)
-							}
-						}
-						FilledTonalIconButton(onClick = { move(i, -step) }) { Icon(Icons.Filled.ChevronLeft, "Antes") }
-						FilledTonalIconButton(onClick = { move(i, step) }) { Icon(Icons.Filled.ChevronRight, "Después") }
-						TextButton(onClick = { picking = i }) {
-							Icon(Icons.Filled.MusicNote, null)
-							Text(if (e.isRest) "Acorde" else "Cambiar")
-						}
-						IconButton(onClick = {
-							events = Timeline.remove(events, i)
-							selected = null
-						}, enabled = events.size > 1) { Icon(Icons.Filled.Delete, "Quitar") }
-						IconButton(onClick = { selected = null }) { Icon(Icons.Filled.Close, "Cerrar") }
-					}
-				}
+				TimelineToolbar(
+					e, step, onStep = { step = if (step == 1f) 0.5f else 1f }, onMove = { d -> move(i, d) },
+					onPick = { picking = i },
+					onRemove = if (events.size > 1) ({ events = Timeline.remove(events, i); selected = null }) else null,
+					onClose = { selected = null }, modifier = Modifier.navigationBarsPadding(),
+				)
 			}
 		},
 	) { pad ->
@@ -158,6 +144,11 @@ fun EditScreen(song: Song, onBack: () -> Unit, onTap: () -> Unit, onSave: (Song)
 							keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
 						)
 					}
+					if (suggested != null) Text(
+						if (suggested >= 0) "Cejilla calculada para tocar con afinación estándar (la original es ${tuningLabel(song.tuning)})."
+						else "Afinación ${tuningLabel(song.tuning)}: con cejilla no se puede, baja la guitarra ${semitonesText(-suggested)}.",
+						style = MaterialTheme.typography.bodySmall, color = Fun.Purple,
+					)
 					Text("Compás", style = MaterialTheme.typography.labelLarge)
 					Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
 						for (n in listOf(2, 3, 4, 6)) FilterChip(beatsPerBar == n, { beatsPerBar = n }, label = { Text("$n/4") })

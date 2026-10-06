@@ -56,6 +56,17 @@ object CifraClubImporter {
 		)
 	}
 
+	/**
+	 * Vídeo para las canciones que no lo traen enlazado: la propia web lo busca en YouTube (a través de su
+	 * proxy) con «artista - título» y usa el primer resultado que se pueda insertar. Hacemos lo mismo.
+	 */
+	fun findVideo(artist: String, title: String): String? = runCatching {
+		val q = java.net.URLEncoder.encode("$artist - $title", "UTF-8")
+		val url = "https://solr.sscdn.co/youtube/v3/search?fields=items(id(videoId))&maxResults=1&order=relevance" +
+			"&part=snippet&q=$q&safeSearch=moderate&type=video&v=2&videoEmbeddable=true"
+		JSONObject(Http.get(url)).getJSONArray("items").getJSONObject(0).getJSONObject("id").getString("videoId")
+	}.getOrNull()
+
 	/** Web actual (Next.js): el estado va en trozos de texto JSON escapados dentro de self.__next_f.push([1,"…"]). */
 	private fun nextMeta(html: String): Meta? {
 		val parts = Regex("""self\.__next_f\.push\(\[1,("(?:\\.|[^"\\])*")]\)""").findAll(html)

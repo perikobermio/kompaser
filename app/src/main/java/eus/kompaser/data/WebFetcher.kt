@@ -40,6 +40,8 @@ class WebFetcher(private val context: Context) {
 			error(if ("Access Denied" in viaBrowser) "La web ha bloqueado el acceso desde esta red" else "La página no contiene acordes")
 		}
 		Log.i(TAG, "HTML obtenido con el navegador interno (${viaBrowser.length} bytes)")
+		// La última página descargada queda en Android/data/eus.kompaser/files para poder revisarla si algo no se lee bien.
+		runCatching { java.io.File(context.getExternalFilesDir(null), "ultima-pagina.html").writeText(viaBrowser) }
 		return viaBrowser
 	}
 

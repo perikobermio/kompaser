@@ -25,5 +25,9 @@ Necesita el servidor en marcha; el móvil recibe el resultado al sincronizar.
     analyzer/analyze.sh "Mama Said"            # guardar en Postgres
     analyzer/analyze.sh --all                  # todas las que tienen vídeo
 
+Afinar las marcas hechas a mano (Marcar tiempos): `analyzer/analyze.sh "Mama Said" --snap` lleva cada marca al
+pulso real del audio, respetando tu desfase medio (el reproductor de YouTube informa del tiempo con retraso) y quitando
+solo la variación de unas centésimas. Prueba antes con `--dry-run`.
+
 Opciones: `--half`/`--double` si el tempo sale al doble/mitad, `--grid 1` para no redondear a medio compás,
 `--youtube <id>` para usar otro vídeo. Sobrescribe los tiempos de la canción: revisa con `--dry-run` si los habías editado a mano.

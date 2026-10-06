@@ -16,8 +16,11 @@ class Importer(context: Context) {
 		val url = extractUrl(text) ?: text.trim()
 		return when {
 			UgImporter.accepts(url) -> fetcher.html(url, UgImporter::looksValid).let { withContext(Dispatchers.Default) { UgImporter.parse(it, url) } }
-			CifraClubImporter.accepts(url) ->
-				fetcher.html(url, CifraClubImporter::looksValid).let { withContext(Dispatchers.Default) { CifraClubImporter.parse(it, url) } }
+			CifraClubImporter.accepts(url) -> {
+				val song = fetcher.html(url, CifraClubImporter::looksValid).let { withContext(Dispatchers.Default) { CifraClubImporter.parse(it, url) } }
+				if (song.youtubeId != null) song
+				else song.copy(youtubeId = withContext(Dispatchers.IO) { CifraClubImporter.findVideo(song.artist, song.title) })
+			}
 			else -> error("Solo se admiten enlaces de Ultimate Guitar y Cifra Club")
 		}
 	}

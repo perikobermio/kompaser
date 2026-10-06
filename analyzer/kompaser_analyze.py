@@ -338,6 +338,8 @@ def main():
 	ap.add_argument("--half", action="store_true", help="el tempo detectado es el doble del real")
 	ap.add_argument("--double", action="store_true", help="el tempo detectado es la mitad del real")
 	ap.add_argument("--grid", type=int, default=2, help="ajusta los cambios a múltiplos de N tiempos (1 = sin ajuste)")
+	ap.add_argument("--snap", action="store_true",
+		help="no recalcula nada: lleva las marcas hechas a mano (Marcar tiempos) al pulso real más cercano del audio")
 	a = ap.parse_args()
 
 	if a.json:
@@ -360,7 +362,64 @@ def main():
 			targets = hits
 
 	for song in targets:
-		analyze(song, a)
+		snap(song, a) if a.snap else analyze(song, a)
+
+
+def snap(song, a, tolerance=0.08):
+	"""
+	Quita la variación de las marcas hechas a mano («me adelanto o atraso unas centésimas»).
+
+	Las marcas suelen ir con un desfase constante respecto al pulso detectado en el audio (el reproductor
+	de YouTube informa del tiempo con algo de retraso; al reproducir se usa el mismo reloj, así que ese
+	desfase no molesta). Se mide ese desfase medio sobre la rejilla de medios pulsos y cada marca se lleva al
+	punto más cercano de la rejilla desplazada, si está a menos de [tolerance] s. Así se respeta el desfase
+	y solo se quita la variación de una marca a otra.
+	"""
+	ev = song["events"]
+	if not ev or any(e.get("t") is None for e in ev):
+		print(f"«{song['title']}» no tiene tiempos marcados: usa Marcar tiempos en el móvil y sincroniza", file=sys.stderr)
+		return
+	yt = a.youtube or song.get("youtube_id")
+	if not yt:
+		print(f"«{song['title']}» no tiene vídeo de YouTube", file=sys.stderr)
+		return
+	times, _, _, bpm = beat_features(download(yt), a.half, a.double)
+	grid = np.sort(np.concatenate([times, (times[:-1] + times[1:]) / 2]))  # pulsos y medios pulsos
+	half = float(np.median(np.diff(grid)))
+	taps = np.array([e["t"] for e in ev])
+	near = grid[np.clip(np.searchsorted(grid, taps), 1, len(grid) - 1) - 1]
+	# Desfase de cada marca dentro de su medio pulso, como ángulo; la media circular da el desfase típico.
+	ang = 2 * np.pi * ((taps - near) % half) / half
+	vec = np.exp(1j * ang).mean()
+	phase = (np.angle(vec) % (2 * np.pi)) / (2 * np.pi) * half
+	if abs(vec) < 0.3:
+		print(f"\n{song['artist']} — {song['title']}: las marcas no siguen el pulso con claridad (concentración {abs(vec):.2f}); no se toca nada.")
+		return
+	shifted = grid + phase
+	new_t, shifts = [], []
+	for t in taps:
+		g = float(shifted[np.argmin(np.abs(shifted - t))])
+		if abs(g - t) <= tolerance and (not new_t or g > new_t[-1] + 0.05):
+			shifts.append(g - t)
+			new_t.append(g)
+		else:
+			new_t.append(float(t))
+	spb = 60.0 / float(song.get("bpm") or bpm)
+	end = new_t[-1] + ev[-1]["b"] * spb
+	out = []
+	for i, e in enumerate(ev):
+		nxt = new_t[i + 1] if i + 1 < len(ev) else end
+		out.append({**e, "t": round(new_t[i], 3), "b": float(max(0.5, round((nxt - new_t[i]) / spb * 2) / 2))})
+	sh = np.abs(shifts) * 1000 if shifts else np.array([0.0])
+	print(f"\n{song['artist']} — {song['title']}")
+	print(f"  Tus marcas van {phase * 1000:.0f} ms por detrás de la rejilla de medios pulsos (se respeta); concentración {abs(vec):.2f}")
+	print(f"  Ajustadas: {len(shifts)} de {len(ev)}   ·   corrección media {sh.mean():.0f} ms, máxima {sh.max():.0f} ms")
+	song = {**song, "events": out, "video_offset_ms": int(out[0]["t"] * 1000), "updated_at": int(time.time() * 1000)}
+	if a.out:
+		Path(a.out).write_text(json.dumps(song, ensure_ascii=False, indent=1))
+	if not a.dry_run and not a.json:
+		api_save(a.api, song)
+		print("  Guardado en el servidor. Sincroniza en el móvil para recibirlo.")
 
 
 def analyze(song, a):

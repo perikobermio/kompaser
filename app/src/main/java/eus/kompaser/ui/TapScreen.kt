@@ -179,7 +179,7 @@ fun TapScreen(song: Song, onBack: () -> Unit, onSave: (Song) -> Unit) {
 				Box(
 					Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(24.dp))
 						.background(Brush.linearGradient(listOf(Fun.Purple, Fun.Pink)))
-						.clickable(enabled = marks.isNotEmpty()) {
+						.clickable {
 							mark(ChordEvent(UNKNOWN_CHORD, song.beatsPerBar.toFloat(), current?.line ?: lyricLine, -1), advances = false)
 						},
 					contentAlignment = Alignment.Center,
@@ -195,7 +195,7 @@ fun TapScreen(song: Song, onBack: () -> Unit, onSave: (Song) -> Unit) {
 			Row(Modifier.fillMaxWidth().padding(bottom = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
 				FilledTonalButton(
 					onClick = { mark(ChordEvent("", song.beatsPerBar.toFloat(), current?.line ?: 0, -1), advances = false) },
-					enabled = marks.isNotEmpty() && current?.isRest == false, modifier = Modifier.weight(1f).height(52.dp),
+					enabled = current?.isRest != true, modifier = Modifier.weight(1f).height(52.dp),
 				) {
 					Icon(Icons.Filled.PauseCircle, null)
 					Spacer(Modifier.width(6.dp))

@@ -47,7 +47,11 @@ import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
-import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.material.icons.filled.ViewTimeline
+import eus.kompaser.model.ChordEvent
+import kotlin.math.abs
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
@@ -120,6 +124,10 @@ fun PlayerScreen(
 	val video = remember { VideoSync() }
 	val metronome = remember { Metronome() }
 	var notice by remember { mutableStateOf<String?>(null) }
+	var timelineMode by remember { mutableStateOf(store.timelineMode) }
+	var selected by remember { mutableStateOf<Int?>(null) }
+	var step by remember { mutableFloatStateOf(1f) }
+	var picking by remember { mutableStateOf<Int?>(null) }
 	LaunchedEffect(notice) {
 		if (notice != null) {
 			delay(1500)
@@ -205,7 +213,14 @@ fun PlayerScreen(
 		}
 		val offsetMs = if (i == 0) ((moved[0].t ?: (song.videoOffsetMs / 1000.0 + d * 60.0 / bpm)) * 1000).toLong() else song.videoOffsetMs
 		onSave(song.copy(events = moved, videoOffsetMs = offsetMs, updatedAt = System.currentTimeMillis()))
-		notice = "$name · 1 tiempo ${if (d < 0) "antes" else "después"}"
+		val amount = if (abs(d) == 1f) "1 tiempo" else if (abs(d) == 0.5f) "½ tiempo" else "${abs(d)} tiempos"
+		notice = "$name · $amount ${if (d < 0) "antes" else "después"}"
+	}
+
+	/** Cambios hechos desde la línea de tiempo: se guardan al momento. */
+	fun saveEvents(evs: List<ChordEvent>) {
+		if (evs === events) return
+		onSave(song.copy(events = evs, updatedAt = System.currentTimeMillis()))
 	}
 
 	val running = if (videoOn) video.playing else playing
@@ -235,13 +250,12 @@ fun PlayerScreen(
 			TopAppBar(
 				title = {
 					Column {
-						Text(song.title, maxLines = 1, overflow = TextOverflow.Ellipsis)
+						Text(song.title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleMedium)
 						Text(
 							maxLines = 1, overflow = TextOverflow.Ellipsis,
 							text = buildString {
 								append(song.artist)
 								if (song.capo > 0) append("  ·  Cejilla ${song.capo}")
-								if (song.tuning.replace(" ", "") != "EADGBE") append("  ·  Afinación ${song.tuning}")
 							},
 							style = MaterialTheme.typography.bodySmall,
 							color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -264,6 +278,16 @@ fun PlayerScreen(
 						metronomeOn = !metronomeOn
 						store.metronome = metronomeOn
 					}) { Icon(if (metronomeOn) Icons.AutoMirrored.Filled.VolumeUp else Icons.AutoMirrored.Filled.VolumeOff, "Metrónomo") }
+					IconButton(onClick = {
+						timelineMode = !timelineMode
+						store.timelineMode = timelineMode
+						selected = null
+					}) {
+						Icon(
+							Icons.Filled.ViewTimeline, "Línea de tiempo",
+							tint = if (timelineMode) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+						)
+					}
 					if (song.youtubeId != null) IconButton(onClick = {
 						pause()
 						onTap()
@@ -334,7 +358,37 @@ fun PlayerScreen(
 				progress = if (countIn) 0f else (inChord / ev.beats).toFloat().coerceIn(0f, 1f),
 			)
 		}
-		val lyrics: @Composable () -> Unit = { Lyrics(song.lines, ev.line, ev.pos) }
+		// Con el vídeo a la vista caben 3 líneas de letra; sin él, 4.
+		val lyrics: @Composable () -> Unit = { Lyrics(song.lines, ev.line, ev.pos, count = if (videoOn && song.youtubeId != null) 3 else 4) }
+		val tuning: @Composable () -> Unit = {
+			Text(
+				tuningNotes(song.tuning),
+				style = MaterialTheme.typography.labelMedium,
+				color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 6.dp),
+			)
+		}
+		val timeline: @Composable (Modifier) -> Unit = { m ->
+			TimelinePlayer(
+				song, beat, if (started) idx else null, selected, m,
+				onSelect = { selected = it },
+				onMove = { i, d -> nudge(i, d) },
+				onInsert = { i, at, chord ->
+					saveEvents(Timeline.split(events, i, at, chord, 60.0 / bpm))
+					selected = i + 1
+					if (chord == UNKNOWN_CHORD) picking = i + 1
+				},
+			)
+		}
+		val toolbar: @Composable () -> Unit = {
+			val sel = selected
+			val e = sel?.let { events.getOrNull(it) }
+			if (timelineMode && sel != null && e != null) TimelineToolbar(
+				e, step, onStep = { step = if (step == 1f) 0.5f else 1f }, onMove = { d -> nudge(sel, d) },
+				onPick = { picking = sel },
+				onRemove = if (events.size > 1) ({ saveEvents(Timeline.remove(events, sel)); selected = null }) else null,
+				onClose = { selected = null },
+			)
+		}
 		val controls: @Composable () -> Unit = {
 			Controls(
 				running = running, onPlay = { if (running) pause() else play() },
@@ -358,27 +412,47 @@ fun PlayerScreen(
 			if (maxWidth > maxHeight) {
 				Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
 					Column(Modifier.weight(1.2f).fillMaxSize().padding(bottom = 8.dp)) {
-						chords(Modifier.weight(1f))
-						Spacer(Modifier.height(6.dp))
-						beats()
+						tuning()
+						if (timelineMode) timeline(Modifier.weight(1f)) else {
+							chords(Modifier.weight(1f))
+							Spacer(Modifier.height(6.dp))
+							beats()
+						}
 					}
 					Column(Modifier.weight(1f).fillMaxSize(), verticalArrangement = Arrangement.SpaceBetween) {
 						videoBox()
-						lyrics()
+						if (!timelineMode) lyrics()
+						toolbar()
 						controls()
 					}
 				}
 			} else {
 				Column(Modifier.fillMaxSize()) {
 					videoBox()
-					chords(Modifier.weight(1f))
-					Spacer(Modifier.height(8.dp))
-					beats()
-					Spacer(Modifier.height(8.dp))
-					lyrics()
+					tuning()
+					if (timelineMode) {
+						timeline(Modifier.weight(1f))
+						toolbar()
+					} else {
+						chords(Modifier.weight(1f))
+						Spacer(Modifier.height(6.dp))
+						beats()
+						Spacer(Modifier.height(6.dp))
+						lyrics()
+					}
 					controls()
 				}
 			}
+		}
+		picking?.let { i ->
+			ChordPicker(
+				events.filter { !it.isRest && it.chord != UNKNOWN_CHORD }.map { it.chord }.distinct(), events.getOrNull(i)?.chord,
+				onDismiss = { picking = null },
+				onPick = { c ->
+					saveEvents(events.toMutableList().also { l -> l.getOrNull(i)?.let { l[i] = it.copy(chord = c) } })
+					picking = null
+				},
+			)
 		}
 		notice?.let {
 			Text(
@@ -469,7 +543,7 @@ private fun ChordCard(
 				Column(
 					// En la grande se reserva abajo el hueco de la barra del último compás.
 					Modifier.fillMaxSize().padding(start = if (big) 12.dp else 8.dp, end = if (big) 12.dp else 8.dp,
-						top = if (big) 12.dp else 8.dp, bottom = if (big) 30.dp else 8.dp),
+						top = if (caption != null) 26.dp else if (big) 12.dp else 8.dp, bottom = if (big) 30.dp else 8.dp),
 					horizontalAlignment = Alignment.CenterHorizontally,
 				) {
 					ChordName(name, nameSize, fg, Modifier.fillMaxWidth())
@@ -548,30 +622,27 @@ private fun Caption(text: String, color: Color, modifier: Modifier) {
 private fun BeatBar(count: Int, active: Int, progress: Float) {
 	val c = MaterialTheme.colorScheme
 	Column {
-		Row(Modifier.fillMaxWidth().height(18.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+		Row(Modifier.fillMaxWidth().height(12.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
 			repeat(count) { i ->
 				Box(
-					Modifier.weight(1f).height(if (i == active) 18.dp else 12.dp).clip(RoundedCornerShape(9.dp))
+					Modifier.weight(1f).height(if (i == active) 12.dp else 8.dp).clip(RoundedCornerShape(6.dp))
 						.background(Fun.beats[i % Fun.beats.size].let { if (i == active) it else if (i < active) it.copy(alpha = 0.4f) else c.surfaceVariant }),
 				)
 			}
 		}
-		Spacer(Modifier.height(4.dp))
-		LinearProgressIndicator(
-			progress = { progress }, modifier = Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(2.dp)),
-			color = Fun.Turquoise, trackColor = c.surfaceVariant, drawStopIndicator = {},
-		)
 	}
 }
 
 @Composable
-private fun Lyrics(lines: List<SongLine>, current: Int, pos: Int) {
+private fun Lyrics(lines: List<SongLine>, current: Int, pos: Int, count: Int) {
 	val c = MaterialTheme.colorScheme
 	val section = (current downTo 0).firstNotNullOfOrNull { lines.getOrNull(it)?.section }
 	Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
 		Text(section.orEmpty(), style = MaterialTheme.typography.labelLarge, color = Fun.Purple, fontWeight = FontWeight.Bold)
-		for (k in 0..1) {
-			val l = lines.getOrNull(current + k) ?: break
+		// La línea actual y las siguientes; las tablaturas sueltas (E|--3--…) no cuentan ni se muestran.
+		val shown = (current until lines.size).filter { it == current || lines[it].chords.isNotEmpty() || !isTabLine(lines[it].lyric) }.take(count)
+		for ((k, li) in shown.withIndex()) {
+			val l = lines[li]
 			val color = if (k == 0) c.onSurface else c.onSurfaceVariant.copy(alpha = 0.6f)
 			Column(Modifier.horizontalScroll(rememberScrollState())) {
 				if (l.chords.isNotEmpty()) Text(
@@ -580,7 +651,7 @@ private fun Lyrics(lines: List<SongLine>, current: Int, pos: Int) {
 				)
 				if (l.lyric.isNotEmpty()) Text(l.lyric, fontFamily = FontFamily.Monospace, fontSize = 16.sp, color = color, softWrap = false)
 			}
-			Spacer(Modifier.height(4.dp))
+			Spacer(Modifier.height(2.dp))
 		}
 	}
 }
@@ -598,17 +669,114 @@ private fun chordLine(l: SongLine, hi: Int, hiColor: Color): AnnotatedString = b
 @Composable
 private fun Controls(running: Boolean, onPlay: () -> Unit, onRestart: () -> Unit, onPrev: () -> Unit, onNext: () -> Unit) {
 	Row(
-		Modifier.fillMaxWidth().padding(vertical = 8.dp),
+		Modifier.fillMaxWidth().padding(vertical = 4.dp),
 		horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically,
 	) {
-		IconButton(onClick = onRestart, Modifier.size(56.dp)) { Icon(Icons.Filled.Replay, "Desde el principio") }
-		IconButton(onClick = onPrev, Modifier.size(56.dp)) { Icon(Icons.Filled.SkipPrevious, "Anterior", Modifier.size(36.dp)) }
+		IconButton(onClick = onRestart, Modifier.size(48.dp)) { Icon(Icons.Filled.Replay, "Desde el principio") }
+		IconButton(onClick = onPrev, Modifier.size(48.dp)) { Icon(Icons.Filled.SkipPrevious, "Anterior", Modifier.size(30.dp)) }
 		FilledIconButton(
-			onClick = onPlay, Modifier.size(84.dp).clip(CircleShape).background(if (running) Fun.current else Brush.linearGradient(listOf(Fun.Turquoise, Color(0xFF3DD9C1)))),
+			onClick = onPlay, Modifier.size(64.dp).clip(CircleShape).background(if (running) Fun.current else Brush.linearGradient(listOf(Fun.Turquoise, Color(0xFF3DD9C1)))),
 			colors = IconButtonDefaults.filledIconButtonColors(containerColor = Color.Transparent, contentColor = Color.White),
 		) {
-			Icon(if (running) Icons.Filled.Pause else Icons.Filled.PlayArrow, "Play/Pausa", Modifier.size(50.dp))
+			Icon(if (running) Icons.Filled.Pause else Icons.Filled.PlayArrow, "Play/Pausa", Modifier.size(40.dp))
 		}
-		IconButton(onClick = onNext, Modifier.size(56.dp)) { Icon(Icons.Filled.SkipNext, "Siguiente", Modifier.size(36.dp)) }
+		IconButton(onClick = onNext, Modifier.size(48.dp)) { Icon(Icons.Filled.SkipNext, "Siguiente", Modifier.size(30.dp)) }
+	}
+}
+
+private val NOTE_NAMES = mapOf(
+	"C" to 0, "C#" to 1, "Db" to 1, "D" to 2, "D#" to 3, "Eb" to 3, "E" to 4, "F" to 5, "F#" to 6, "Gb" to 6,
+	"G" to 7, "G#" to 8, "Ab" to 8, "A" to 9, "A#" to 10, "Bb" to 10, "B" to 11,
+)
+
+/** Semitonos respecto a la afinación estándar según la 1ª cuerda (Eb → -1). Null si no se reconoce. */
+fun tuningShift(tuning: String): Int? {
+	val top = NOTE_NAMES[tuning.trim().split(Regex("\\s+")).lastOrNull()] ?: return null
+	return ((top - 4 + 18) % 12) - 6
+}
+
+/** Lo que hay que bajar la guitarra, en texto («½ tono»…), para un desplazamiento negativo. */
+fun semitonesText(n: Int) = when (n) {
+	1 -> "½ tono"
+	2 -> "1 tono"
+	3 -> "1 tono y ½"
+	else -> "$n semitonos"
+}
+
+/**
+ * Cejilla con la que, con la guitarra en afinación estándar, se suena igual que el disco (afinación +
+ * cejilla originales). Null si no hace falta cambiar nada; negativo si sería más grave (no hay cejilla posible).
+ */
+fun standardCapo(tuning: String, capo: Int): Int? {
+	val shift = tuningShift(tuning) ?: return null
+	if (shift == 0) return null
+	return shift + capo
+}
+
+/** Notas de cada cuerda (6ª a 1ª) con nombres en español: «Mi♭ La♭ Re♭ Sol♭ Si♭ Mi♭». */
+fun tuningNotes(tuning: String): String {
+	val names = mapOf('C' to "Do", 'D' to "Re", 'E' to "Mi", 'F' to "Fa", 'G' to "Sol", 'A' to "La", 'B' to "Si")
+	return tuning.trim().split(Regex("\\s+")).joinToString("  ") { n ->
+		val base = names[n.firstOrNull()?.uppercaseChar()] ?: return@joinToString n
+		base + when (n.drop(1)) { "#" -> "♯"; "b" -> "♭"; else -> "" }
+	}
+}
+
+/** Texto corto de la afinación: «estándar», «½ tono abajo (Eb)», «Drop D»… */
+fun tuningLabel(tuning: String): String {
+	val notes = tuning.trim().split(Regex("\\s+"))
+	if (notes.joinToString(" ") == "E A D G B E") return "estándar"
+	if (notes.size == 6 && notes.drop(1).joinToString(" ") == "A D G B E") return "Drop ${notes[0]}"
+	val d = tuningShift(tuning) ?: return tuning
+	val what = when (d) {
+		-1 -> "½ tono abajo"
+		-2 -> "1 tono abajo"
+		-3 -> "1 tono y ½ abajo"
+		1 -> "½ tono arriba"
+		2 -> "1 tono arriba"
+		else -> return tuning
+	}
+	return "$what (${notes.joinToString(" ")})"
+}
+
+/**
+ * La línea de tiempo del editor dentro del reproductor: el bloque que suena se resalta, un cabezal
+ * avanza con la canción y la lista se desplaza sola hasta la línea que suena.
+ */
+@Composable
+private fun TimelinePlayer(
+	song: Song, beat: Double, nowIndex: Int?, selected: Int?, modifier: Modifier,
+	onSelect: (Int) -> Unit, onMove: (Int, Float) -> Unit, onInsert: (Int, Float, String) -> Unit,
+) {
+	val events = song.events
+	val starts = song.starts
+	val byLine = remember(events) { events.withIndex().groupBy { it.value.line } }
+	val rows = remember(events, song.lines) {
+		// Filas con acordes, más las que abren sección (para ver su título); la letra suelta y las tablaturas, fuera.
+		song.lines.indices.filter { li -> byLine[li] != null || song.lines[li].section != null }
+	}
+	val listState = rememberLazyListState()
+	val currentRow = nowIndex?.let { rows.indexOf(events[it].line) } ?: -1
+	LaunchedEffect(currentRow) {
+		if (currentRow >= 0) listState.animateScrollToItem((currentRow - 1).coerceAtLeast(0))
+	}
+	LazyColumn(modifier.fillMaxWidth(), state = listState) {
+		items(rows.size) { r ->
+			val li = rows[r]
+			val blocks = byLine[li].orEmpty()
+			val first = blocks.firstOrNull()?.index
+			val rowStart = first?.let { starts[it] } ?: 0.0
+			val rowEnd = blocks.lastOrNull()?.let { starts[it.index + 1] } ?: rowStart
+			val inRow = beat >= rowStart && beat < rowEnd
+			val t = first?.let { events[it].t }
+			TimelineRow(
+				song.lines[li], blocks, rowStart = rowStart, beatsPerBar = song.beatsPerBar, selected = selected,
+				timeLabel = t?.let { "%d:%02d".format((it / 60).toInt(), (it % 60).toInt()) },
+				onSelect = onSelect, onMove = onMove, onInsert = onInsert,
+				nowIndex = if (inRow) nowIndex else null, playhead = if (inRow) beat else null,
+				// Todo lo anterior al acorde que suena queda iluminado.
+				playedBefore = nowIndex,
+			)
+		}
 	}
 }
