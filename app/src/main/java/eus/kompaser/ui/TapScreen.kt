@@ -25,10 +25,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.PauseCircle
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -150,84 +150,45 @@ fun TapScreen(song: Song, onBack: () -> Unit, onSave: (Song) -> Unit, onSaveStay
 		view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
 	}
 
-	/** Marca el evento actual; el comienzo de cada línea nueva es independiente de la anterior. */
+	/** Marca el inicio del evento actual, sin imponer un máximo de tiempos a la línea. */
 	fun markAt(t: Double) {
-		// Una pausa insertada entre líneas ocupa su propio compás, fuera del reparto de acordes.
-		if (events.getOrNull(cursor)?.isRest == true) {
-			val out = events.toMutableList()
-			val rest = out[cursor]
-			val delta = t - (rest.t ?: t)
-			if (cursor > 0) {
-				val prev = out[cursor - 1]
-				val prevStart = prev.t ?: t
-				out[cursor - 1] = prev.copy(beats = ((t - prevStart) / secPerBeat).toFloat().coerceAtLeast(1f))
-			}
-			out[cursor] = rest.copy(t = t, manual = true)
-			for (i in cursor + 1 until out.size) out[i].t?.let { out[i] = out[i].copy(t = it + delta) }
-			applyMarked(out, cursor + 1)
-			selected = null
-			return
-		}
 		if (cursor >= events.size) {
 			val last = events.lastOrNull() ?: return
-			val lt = last.t ?: return
-			var first = events.lastIndex
-			while (first > 0 && events[first - 1].line == last.line) first--
-			val lineStart = events[first].t ?: lt
-			val lastOffset = kotlin.math.round((lt - lineStart) / secPerBeat).toInt()
-			val beats = (bar.toInt() * 2 - lastOffset).coerceAtLeast(1)
+			val lastStart = last.t ?: return
+			val beats = kotlin.math.round((t - lastStart) / secPerBeat).toInt().coerceAtLeast(1)
 			applyMarked(events.dropLast(1) + last.copy(beats = beats.toFloat(), manual = true), events.size)
 			selected = null
-			notice = "Final marcado · línea de ${bar.toInt() * 2} tiempos"
+			notice = "Final marcado · ${beats} tiempos"
 			return
 		}
 
 		val out = events.toMutableList()
-		val currentLine = out[cursor].line
-		var first = cursor
-		while (first > 0 && out[first - 1].line == currentLine) first--
-		var last = cursor
-		while (last + 1 < out.size && out[last + 1].line == currentLine) last++
-		val lineBeats = bar.toInt() * 2
-		if (last - first + 1 > lineBeats) {
-			notice = "Esta línea tiene más acordes que tiempos disponibles ($lineBeats)"
-			return
-		}
-
-		val lineStart: Double
-		val targetOffset: Int
-		if (cursor == first) {
-			// El instante marcado fija el inicio del nuevo compás. No se completa ni se
-			// redimensiona el compás anterior para encajarlo en una cuadrícula global.
-			lineStart = t
-			targetOffset = 0
+		val current = out[cursor]
+		val oldStart = current.t ?: t
+		val newStart: Double
+		var placedLine = current.line
+		if (current.isRest) {
+			// Marcar una pausa mueve su inicio y lo que viene después, pero nunca el compás anterior.
+			newStart = t
+		} else if (cursor > 0) {
+			val previous = out[cursor - 1]
+			val previousStart = previous.t ?: (t - previous.beats * secPerBeat)
+			val elapsed = kotlin.math.round((t - previousStart) / secPerBeat).toInt().coerceAtLeast(1)
+			val previousEnd = previousStart + elapsed * secPerBeat
+			out[cursor - 1] = previous.copy(beats = elapsed.toFloat())
+			if (!previous.isRest && current.line != previous.line) {
+				var first = cursor - 1
+				while (first > 0 && out[first - 1].line == previous.line && !out[first - 1].isRest) first--
+				val used = (first until cursor).sumOf { out[it].beats.toDouble() }
+				if (used < bar * 2 - 1e-6) placedLine = previous.line
+			}
+			newStart = previousEnd
 		} else {
-			lineStart = out[first].t ?: t
-			val previousOffset = kotlin.math.round((out[cursor - 1].t!! - lineStart) / secPerBeat).toInt()
-			val minOffset = previousOffset + 1
-			val maxOffset = lineBeats - (last - cursor + 1)
-			if (minOffset > maxOffset) {
-				notice = "La línea ya ocupa sus $lineBeats tiempos"
-				return
-			}
-			targetOffset = kotlin.math.round((t - lineStart) / secPerBeat).toInt().coerceIn(minOffset, maxOffset)
-			for (k in first until cursor - 1) {
-				val duration = kotlin.math.round((out[k + 1].t!! - out[k].t!!) / secPerBeat).toInt().coerceAtLeast(1)
-				out[k] = out[k].copy(beats = duration.toFloat())
-			}
-			out[cursor - 1] = out[cursor - 1].copy(beats = (targetOffset - previousOffset).toFloat())
+			newStart = t
 		}
-
-		val remaining = lineBeats - targetOffset
-		val count = last - cursor + 1
-		val each = remaining / count
-		val extra = remaining % count
-		var beatOffset = targetOffset
-		for (k in cursor..last) {
-			val duration = each + if (k - cursor < extra) 1 else 0
-			out[k] = out[k].copy(t = lineStart + beatOffset * secPerBeat, beats = duration.toFloat(), manual = if (k == cursor) true else out[k].manual)
-			beatOffset += duration
-		}
+		val delta = newStart - oldStart
+		out[cursor] = current.copy(t = newStart, line = placedLine, manual = true)
+		for (i in cursor + 1 until out.size) out[i].t?.let { out[i] = out[i].copy(t = it + delta) }
 		applyMarked(out, cursor + 1)
 		selected = null
 	}
@@ -241,36 +202,33 @@ fun TapScreen(song: Song, onBack: () -> Unit, onSave: (Song) -> Unit, onSaveStay
 		val lineBeats = bar.toInt() * 2
 		val start: Double
 		val duration: Int
+		var eventLine = event.line
 		if (prev == null || prevTime == null) {
 			start = t
 			duration = lineBeats
 		} else {
-			var first = prevIndex
-			while (first > 0 && out[first - 1].line == prev.line) first--
-			val lineStart = out[first].t ?: prevTime
-			val prevOffset = kotlin.math.round((prevTime - lineStart) / secPerBeat).toInt().coerceIn(0, lineBeats - 1)
 			if (prev.isRest) {
 				start = prevTime + prev.beats * secPerBeat
 				duration = lineBeats
-			} else if (event.line == prev.line) {
-				val minOffset = prevOffset + 1
-				if (minOffset >= lineBeats) {
-					notice = "La línea ya ocupa sus $lineBeats tiempos"
-					return false
-				}
-				val clickedOffset = kotlin.math.round((t - lineStart) / secPerBeat).toInt()
-				val offsetInLine = clickedOffset.coerceIn(minOffset, lineBeats - 1)
-				out[prevIndex] = prev.copy(beats = (offsetInLine - prevOffset).toFloat())
-				start = lineStart + offsetInLine * secPerBeat
-				duration = lineBeats - offsetInLine
 			} else {
-				// Una línea nueva comienza al terminar la anterior, aunque esta haya durado
-				// menos de ocho tiempos. El acorde anterior queda intacto.
-				start = prevTime + prev.beats * secPerBeat
-				duration = lineBeats
+				var first = prevIndex
+				while (first > 0 && out[first - 1].line == prev.line && !out[first - 1].isRest) first--
+				val priorBeats = (first until prevIndex).sumOf { out[it].beats.toDouble() }
+				val elapsed = kotlin.math.round((t - prevTime) / secPerBeat).toInt().coerceAtLeast(1)
+				val canJoinPreviousLine = event.line == prev.line || priorBeats + elapsed < lineBeats
+				if (canJoinPreviousLine) {
+					out[prevIndex] = prev.copy(beats = elapsed.toFloat())
+					start = prevTime + elapsed * secPerBeat
+					eventLine = prev.line
+					duration = if (event.line == prev.line) lineBeats else (lineBeats - kotlin.math.round(priorBeats).toInt() - elapsed).coerceAtLeast(1)
+				} else {
+					// Si la línea ya no tiene hueco, el acorde empieza en la línea siguiente.
+						start = maxOf(t, prevTime + prev.beats * secPerBeat)
+					duration = lineBeats
+				}
 			}
 		}
-		out += event.copy(beats = duration.toFloat(), t = start, manual = true)
+		out += event.copy(beats = duration.toFloat(), line = eventLine, t = start, manual = true)
 		applyMarked(out, out.size)
 		selected = null
 		return true
@@ -287,25 +245,21 @@ fun TapScreen(song: Song, onBack: () -> Unit, onSave: (Song) -> Unit, onSaveStay
 		}
 	}
 
-	/** Inserta un acorde desconocido en el punto actual y avanza como una pulsación normal. */
+	/** Inserta una pausa de cuatro tiempos después del acorde seleccionado. */
 	fun insertBlank() {
-		val line = if (events.isEmpty()) sourceEvents.getOrNull(sourceCursor)?.line ?: 0
-		else maxOf(song.lines.size, (events.last().line + 1))
-		appendEvent(ChordEvent(UNKNOWN_CHORD, 1f, line, -1), now())
-	}
-
-	/** Inserta un compás tras la línea indicada y desplaza la secuencia posterior. */
-	fun insertBarAfterLine(line: Int) {
-		val last = events.indexOfLast { it.line == line }
-		if (last < 0) return
-		val insertAt = last + 1
-		val end = (events[last].t ?: offset) + events[last].beats * secPerBeat
-		val shift = bar * secPerBeat
+		val anchorIndex = selected?.takeIf { it in events.indices } ?: events.lastIndex
+		val insertAt = if (anchorIndex >= 0) anchorIndex + 1 else 0
+		val anchor = events.getOrNull(anchorIndex)
+		val line = anchor?.line ?: sourceEvents.getOrNull(sourceCursor)?.line ?: 0
+		val start = anchor?.let { (it.t ?: now()) + it.beats * secPerBeat } ?: now()
+		val duration = 4f
+		val shift = duration * secPerBeat
 		val out = events.toMutableList()
-		out.add(insertAt, ChordEvent("", bar, line, -1, end))
+		out.add(insertAt, ChordEvent("", duration, line, -1, start, manual = true))
 		for (i in insertAt + 1 until out.size) out[i].t?.let { out[i] = out[i].copy(t = it + shift) }
-		apply(out, minOf(cursor, insertAt))
-		selected = null
+		val newCursor = if (insertAt <= cursor) cursor + 1 else cursor
+		apply(out, newCursor)
+		selected = insertAt
 	}
 
 	/**
@@ -349,55 +303,19 @@ fun TapScreen(song: Song, onBack: () -> Unit, onSave: (Song) -> Unit, onSaveStay
 		if (out == null) notice = "No hay sitio en el compás" else apply(out, cursor)
 	}
 
-	/** Cambia la duración del acorde y reparte el tiempo restante entre los acordes de su línea. */
+	/** Cambia solo la duración seleccionada y desplaza los eventos posteriores. */
 	fun setDuration(i: Int, newBeats: Float) {
-		val line = events[i].line
-		var a = i
-		while (!events[i].isRest && a > 0 && events[a - 1].line == line && !events[a - 1].isRest) a--
-		var b = i
-		while (!events[i].isRest && b < events.lastIndex && events[b + 1].line == line && !events[b + 1].isRest) b++
-		val members = (a..b).toList()
-		val others = members.filter { it != i }
-		val oldTotal = members.sumOf { events[it].beats.toDouble() }
-		val oldBeats = events[i].beats.toDouble()
-		val shrinking = newBeats < oldBeats - 1e-6
-		// Al acortar, la línea también se acorta. Al alargar, los demás acordes
-		// absorben el cambio; si ya no caben, la línea continúa en la fila siguiente.
-		val total = when {
-			shrinking -> oldTotal - oldBeats + newBeats
-			others.isEmpty() -> newBeats.toDouble()
-			else -> maxOf(oldTotal, newBeats + others.size.toDouble())
-		}
-		val rest = total - newBeats
-		val weights = others.map { events[it].beats.toDouble().coerceAtLeast(0.01) }
-		val beats = HashMap<Int, Double>()
-		beats[i] = newBeats.toDouble()
-		if (others.isNotEmpty() && shrinking) {
-			others.forEach { beats[it] = events[it].beats.toDouble() }
-		} else if (others.isNotEmpty()) {
-			// Reparto del resto en tiempos enteros si se puede (mayor resto); si no, en proporción exacta.
-			val whole = rest >= others.size && rest % 1.0 == 0.0
-			if (whole) {
-				val share = weights.map { it / weights.sum() * rest }
-				val parts = share.map { maxOf(1, kotlin.math.floor(it).toInt()) }.toMutableList()
-				while (parts.sum() > rest && parts.any { it > 1 }) parts[parts.indices.filter { parts[it] > 1 }.minBy { share[it] - parts[it] }] -= 1
-				val order = share.indices.sortedByDescending { share[it] - kotlin.math.floor(share[it]) }
-				var o = 0
-				while (parts.sum() < rest) { parts[order[o % order.size]] += 1; o++ }
-				others.forEachIndexed { k, idx -> beats[idx] = parts[k].toDouble() }
-			} else others.forEachIndexed { k, idx -> beats[idx] = rest * weights[k] / weights.sum() }
-		}
-		val start = events[a].t ?: return
-		val shift = (total - oldTotal) * secPerBeat
+		val current = events.getOrNull(i) ?: return
+		val deltaBeats = newBeats - current.beats
+		val delta = deltaBeats * secPerBeat
 		val out = events.toMutableList()
-		var t = start
-		for (k in members) {
-			out[k] = out[k].copy(t = t, beats = beats[k]!!.toFloat(), manual = out[k].manual || k == i)
-			t += beats[k]!! * secPerBeat
+		out[i] = current.copy(beats = newBeats, manual = true)
+		if (deltaBeats > 1e-6f) {
+			for (k in i + 1 until out.size) out[k].t?.let { out[k] = out[k].copy(t = it + delta) }
 		}
-		for (k in b + 1 until out.size) out[k].t?.let { out[k] = out[k].copy(t = it + shift) }
-		apply(out, cursor)
-		if (shift > 1e-6) notice = "La línea crece; lo de detrás se retrasa ${fmtBeatsText(total - oldTotal)}"
+		// Evita que normalize vuelva a alargar un acorde acortado para cubrir el espacio siguiente.
+		applyMarked(out, cursor)
+		if (deltaBeats > 1e-6f) notice = "Los siguientes compases se retrasan ${fmtBeatsText(deltaBeats.toDouble())}"
 	}
 
 	/** Índices de los acordes de la misma línea de letra que [i] (consecutivos). */
@@ -414,23 +332,9 @@ fun TapScreen(song: Song, onBack: () -> Unit, onSave: (Song) -> Unit, onSaveStay
 	/** Repartos posibles para una línea de [n] acordes, manteniendo su duración actual. */
 	fun linePatterns(i: Int): List<List<Int>> {
 		val n = lineOf(i).count()
-		if (n !in 1..4) return emptyList()
-		val r = lineOf(i)
-		val lineTotal = r.sumOf { events[it].beats.toDouble() }
-		val target = kotlin.math.round(lineTotal).toInt()
-		if (abs(lineTotal - target) > 1e-3 || target !in n..8) return emptyList()
-		val values = 1..8
-		val out = mutableListOf<List<Int>>()
-		fun rec(acc: List<Int>) {
-			if (acc.size == n) {
-				val sum = acc.sum()
-				if (sum == target) out += acc
-				return
-			}
-			for (v in values) rec(acc + v)
-		}
-		rec(emptyList())
-		return out.sortedWith(compareBy({ it.sum() }, { it.joinToString() }))
+		if (n !in 2..4) return emptyList()
+		return listOf(listOf(4, 4), listOf(2, 2, 4), listOf(4, 2, 2), listOf(2, 2, 2, 2))
+			.filter { it.size == n }
 	}
 
 	/** Pone la línea de [i] con las duraciones [pattern]; crece o encoge y lo de detrás se desplaza. */
@@ -454,10 +358,14 @@ fun TapScreen(song: Song, onBack: () -> Unit, onSave: (Song) -> Unit, onSaveStay
 		apply(events.toMutableList().also { it[i] = it[i].copy(chord = UNKNOWN_CHORD) }, cursor)
 	}
 
-	/** Borra el bloque [i]: su tiempo pasa al anterior. */
+	/** Borra solo el bloque [i] y adelanta los eventos posteriores por su duración. */
 	fun remove(i: Int) {
 		if (events.size <= 1) return
-		apply(Timeline.remove(events, i), if (i < cursor) cursor - 1 else cursor)
+		val removed = events[i]
+		val out = events.toMutableList().also { it.removeAt(i) }
+		val delta = removed.beats * secPerBeat
+		for (k in i until out.size) out[k].t?.let { out[k] = out[k].copy(t = it - delta) }
+		apply(out, if (i < cursor) cursor - 1 else cursor)
 	}
 
 	fun startFrom(i: Int) {
@@ -525,20 +433,20 @@ fun TapScreen(song: Song, onBack: () -> Unit, onSave: (Song) -> Unit, onSaveStay
 		Box(Modifier.fillMaxSize().padding(pad)) {
 			Column(Modifier.fillMaxSize().padding(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
 				YouTubeBox(videoId, video, Modifier.fillMaxWidth().aspectRatio(16f / 9f))
-				TapTimeline(
-					song, events, starts, cursor, playBeat, Modifier.weight(1f),
-					onSelect = { i -> startFrom(i); selected = i },
-					onLongPress = { i -> picking = i },
-					onDrag = { i, d -> drag(i, d) },
-					onInsertBar = ::insertBarAfterLine,
-					selected = selected,
+					TapTimeline(
+						song, events, starts, cursor, playBeat, Modifier.weight(1f),
+						onSelect = { i -> startFrom(i); selected = i },
+						onBlockTap = { i -> if (events[i].isRest) picking = i else { startFrom(i); selected = i } },
+						onLongPress = { i -> picking = i },
+						onDrag = { i, d -> drag(i, d) },
+						selected = selected,
 				)
 
-				// Los dos botones de acorde.
+				// Controles para marcar, insertar una pausa y controlar el vídeo.
 				val next = events.getOrNull(cursor) ?: sourceEvents.getOrNull(sourceCursor)
 				Row(Modifier.fillMaxWidth().height(112.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
 					Box(
-						Modifier.weight(1.7f).fillMaxHeight().clip(RoundedCornerShape(24.dp))
+						Modifier.weight(1.35f).fillMaxHeight().clip(RoundedCornerShape(24.dp))
 							.background(if (next == null) Brush.linearGradient(listOf(Fun.Turquoise, Color(0xFF3DD9C1))) else Fun.current)
 							.clickable { markNext() },
 						contentAlignment = Alignment.Center,
@@ -576,8 +484,22 @@ fun TapScreen(song: Song, onBack: () -> Unit, onSave: (Song) -> Unit, onSaveStay
 						Column(horizontalAlignment = Alignment.CenterHorizontally) {
 							Text("VACÍO", color = Color.White.copy(alpha = 0.85f), fontWeight = FontWeight.Bold, fontSize = 13.sp)
 							Text("?", color = Color.White, fontWeight = FontWeight.Black, fontSize = 46.sp)
-							Text("insertar y avanzar", color = Color.White.copy(alpha = 0.8f), fontSize = 12.sp)
+							Text("4 tiempos", color = Color.White.copy(alpha = 0.8f), fontSize = 12.sp)
 						}
+					}
+					Box(
+						Modifier.width(60.dp).fillMaxHeight().clip(RoundedCornerShape(20.dp))
+							.background(Fun.Ink)
+							.clickable {
+								if (video.playing) video.player?.pause() else video.player?.play()
+							},
+						contentAlignment = Alignment.Center,
+					) {
+						Icon(
+							if (video.playing) Icons.Filled.PauseCircle else Icons.Filled.PlayArrow,
+							contentDescription = if (video.playing) "Pausar vídeo" else "Reproducir vídeo",
+							modifier = Modifier.size(34.dp), tint = Color.White,
+						)
 					}
 				}
 				Spacer(Modifier.height(4.dp))
@@ -594,32 +516,54 @@ fun TapScreen(song: Song, onBack: () -> Unit, onSave: (Song) -> Unit, onSaveStay
 
 	picking?.let { i ->
 		ChordPicker(
-			events.filter { !it.isRest && it.chord != UNKNOWN_CHORD }.map { it.chord }.distinct(), events.getOrNull(i)?.chord,
+			events.filter { !it.isRest && it.chord != UNKNOWN_CHORD }.map { it.chord }.distinct(),
+			events.getOrNull(i)?.let { if (it.isRest) null else it.chord },
 			onDismiss = { picking = null },
-			onPick = { c ->
-				apply(events.toMutableList().also { l -> l.getOrNull(i)?.let { l[i] = it.copy(chord = c) } }, cursor)
-				picking = null
-			},
+				onPick = { c ->
+					val out = events.toMutableList()
+					out.getOrNull(i)?.let { event ->
+						out[i] = if (event.isRest) {
+							ChordEvent(c, event.beats, event.line, -1, event.t, manual = true)
+						} else event.copy(chord = c)
+					}
+					apply(out, cursor)
+					selected = i
+					picking = null
+				},
 			onDelete = if (events.size > 1) ({ picking = null; remove(i) }) else null,
 			header = {
 				val e = events.getOrNull(i)
 				if (e != null) Column(Modifier.padding(bottom = 12.dp)) {
+					var durationMenu by remember(i) { mutableStateOf(false) }
 					Text("Duración", style = MaterialTheme.typography.labelLarge)
-					val name = NOTE_VALUES.firstOrNull { abs(it.second - e.beats) < 1e-3f }?.first
 					val b = if (e.beats % 1f == 0f) e.beats.toInt().toString() else "%.3f".format(e.beats).trimEnd('0')
 					Text(
-						name?.let { "$it ($b ${if (e.beats == 1f) "tiempo" else "tiempos"})" } ?: "$b tiempos",
+						"$b ${if (e.beats == 1f) "tiempo" else "tiempos"}",
 						fontWeight = FontWeight.Bold, fontSize = 16.sp,
 					)
-					FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-						for ((label, beats) in NOTE_VALUES) FilterChip(
-							abs(beats - e.beats) < 1e-3f, onClick = { setDuration(i, beats) },
-							label = { Text(label) },
+					Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+						for (beats in 1..4) FilterChip(
+							abs(beats - e.beats) < 1e-3f, onClick = { setDuration(i, beats.toFloat()) },
+							label = { Text(beats.toString()) },
 						)
+							Box {
+								FilterChip(
+									selected = false,
+									onClick = { durationMenu = true },
+									label = { Text("1–15") },
+									leadingIcon = { Icon(Icons.Filled.Add, contentDescription = "Elegir duración") },
+								)
+							DropdownMenu(expanded = durationMenu, onDismissRequest = { durationMenu = false }) {
+								for (beats in 1..15) DropdownMenuItem(
+									text = { Text("$beats ${if (beats == 1) "tiempo" else "tiempos"}") },
+									onClick = { durationMenu = false; setDuration(i, beats.toFloat()) },
+								)
+							}
+						}
 					}
 					val r = lineOf(i)
 					val patterns = linePatterns(i)
-					if (patterns.size > 1) {
+					if (patterns.isNotEmpty()) {
 						Text(
 							"Toda la línea (${r.joinToString(" · ") { events[it].chord.ifEmpty { "pausa" } }})",
 							style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(top = 10.dp),
@@ -629,7 +573,7 @@ fun TapScreen(song: Song, onBack: () -> Unit, onSave: (Song) -> Unit, onSaveStay
 							for (p in patterns) FilterChip(
 								p.indices.all { abs(p[it] - currentPattern[it]) < 1e-3f },
 								onClick = { setLine(i, p) },
-								label = { Text(p.joinToString("-") + "  (${p.sum() / bar.toInt()} c.)") },
+								label = { Text(p.joinToString("-")) },
 							)
 						}
 					}
@@ -667,8 +611,8 @@ fun TapScreen(song: Song, onBack: () -> Unit, onSave: (Song) -> Unit, onSaveStay
 @Composable
 private fun TapTimeline(
 	song: Song, events: List<ChordEvent>, starts: DoubleArray, cursor: Int, playBeat: Double, modifier: Modifier,
-	onSelect: (Int) -> Unit, onLongPress: (Int) -> Unit, onDrag: (Int, Float) -> Unit,
-	onInsertBar: (Int) -> Unit, selected: Int?,
+	onSelect: (Int) -> Unit, onBlockTap: (Int) -> Unit, onLongPress: (Int) -> Unit, onDrag: (Int, Float) -> Unit,
+	selected: Int?,
 ) {
 	val rows = remember(events, song.lines) { timelineDisplayRows(song.lines, events) }
 	val listState = rememberLazyListState()
@@ -687,28 +631,17 @@ private fun TapTimeline(
 			val rowEnd = blocks.lastOrNull()?.let { starts[it.index + 1] } ?: rowStart
 			val inRow = playBeat >= rowStart && playBeat < rowEnd
 			val t = first?.let { events[it].t }
-			Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
-				TimelineRow(
+			TimelineRow(
 					line, blocks, rowStart = rowStart, beatsPerBar = song.beatsPerBar, selected = selected ?: cursor,
 					timeLabel = t?.let { "%d:%02d".format((it / 60).toInt(), (it % 60).toInt()) },
 					onSelect = onSelect, onMove = onDrag, onInsert = { _, _, _ -> }, dragBlocks = true,
+					onBlockTap = onBlockTap,
 					nowIndex = if (inRow) nowIdx else null, playhead = if (inRow) playBeat else null,
 					editable = false, showMarks = true, dimUnmarked = true, onLongPress = onLongPress,
-					modifier = Modifier.weight(1f),
 				)
-				if (li != null && blocks.isNotEmpty()) IconButton(onClick = { onInsertBar(li) }) {
-					Text("+", fontSize = 24.sp)
-				}
-			}
 		}
 	}
 }
-
-/** Figuras y su duración en tiempos (compases de x/4: la negra es un tiempo). */
-private val NOTE_VALUES = listOf(
-	"1" to 1f, "2" to 2f, "3" to 3f, "4" to 4f,
-	"5" to 5f, "6" to 6f, "7" to 7f, "8" to 8f,
-)
 
 private fun fmtBeatsText(b: Double): String {
 	val r = Math.round(b * 100) / 100.0

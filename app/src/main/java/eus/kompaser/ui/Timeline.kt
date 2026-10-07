@@ -85,21 +85,35 @@ internal data class TimelineDisplayRow(
 	val blocks: List<IndexedValue<ChordEvent>>,
 )
 
-/** Builds lyric rows and puts every rest on its own row immediately after its lyric line. */
+/** Builds lyric rows in sequence, with rests on standalone rows at their actual positions. */
 internal fun timelineDisplayRows(lines: List<SongLine>, events: List<ChordEvent>): List<TimelineDisplayRow> {
 	val byLine = events.withIndex().groupBy { it.value.line }
 	val rows = mutableListOf<TimelineDisplayRow>()
+	fun appendInSequence(lineIndex: Int?, lineEvents: List<IndexedValue<ChordEvent>>, showEmptyLine: Boolean) {
+		val chordRun = mutableListOf<IndexedValue<ChordEvent>>()
+		var emittedLine = false
+		fun flushChords() {
+			if (chordRun.isNotEmpty()) {
+				rows += TimelineDisplayRow(lineIndex, chordRun.toList())
+				chordRun.clear()
+				emittedLine = true
+			}
+		}
+		for (event in lineEvents) {
+			if (event.value.isRest) {
+				flushChords()
+				rows += TimelineDisplayRow(null, listOf(event))
+			} else chordRun += event
+		}
+		flushChords()
+		if (!emittedLine && showEmptyLine) rows += TimelineDisplayRow(lineIndex, emptyList())
+	}
 	for (li in lines.indices) {
 		val lineEvents = byLine[li].orEmpty()
-		val chords = lineEvents.filterNot { it.value.isRest }
-		if (chords.isNotEmpty() || lines[li].section != null) rows += TimelineDisplayRow(li, chords)
-		lineEvents.filter { it.value.isRest }.forEach { rows += TimelineDisplayRow(null, listOf(it)) }
+		appendInSequence(li, lineEvents, lines[li].section != null)
 	}
 	for (li in byLine.keys.filter { it !in lines.indices }.sorted()) {
-		val extra = byLine[li].orEmpty()
-		val chords = extra.filterNot { it.value.isRest }
-		if (chords.isNotEmpty()) rows += TimelineDisplayRow(null, chords)
-		extra.filter { it.value.isRest }.forEach { rows += TimelineDisplayRow(null, listOf(it)) }
+		appendInSequence(null, byLine[li].orEmpty(), false)
 	}
 	return rows
 }
