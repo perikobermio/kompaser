@@ -52,6 +52,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import eus.kompaser.model.Song
+import eus.kompaser.model.SongLine
 
 private fun fmtSec(s: Double) = "%.3f".format(s).replace(',', '.').trimEnd('0').trimEnd('.')
 
@@ -128,7 +129,7 @@ fun EditScreen(song: Song, onBack: () -> Unit, onTap: () -> Unit, onSave: (Song)
 		val starts = remember(events) {
 			DoubleArray(events.size + 1).also { a -> events.forEachIndexed { k, e -> a[k + 1] = a[k] + e.beats } }
 		}
-		val byLine = remember(events) { events.withIndex().groupBy { it.value.line } }
+		val timelineRows = remember(events, song.lines) { timelineDisplayRows(song.lines, events) }
 		LazyColumn(Modifier.padding(pad).padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
 			item {
 				Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -186,9 +187,9 @@ fun EditScreen(song: Song, onBack: () -> Unit, onTap: () -> Unit, onSave: (Song)
 					HorizontalDivider()
 				}
 			}
-			itemsIndexed(song.lines) { li, line ->
-				val blocks = byLine[li].orEmpty()
-				if (blocks.isEmpty() && line.section == null && line.lyric.isBlank()) return@itemsIndexed
+			itemsIndexed(timelineRows) { _, row ->
+				val line = row.lineIndex?.let { song.lines[it] } ?: SongLine(null, "", emptyList())
+				val blocks = row.blocks
 				val first = blocks.firstOrNull()?.index
 				val t = first?.let { events[it].t }
 				TimelineRow(

@@ -756,27 +756,25 @@ private fun TimelinePlayer(
 ) {
 	val events = song.events
 	val starts = song.starts
-	val byLine = remember(events) { events.withIndex().groupBy { it.value.line } }
-	val rows = remember(events, song.lines) {
-		// Filas con acordes, más las que abren sección (para ver su título); la letra suelta y las tablaturas, fuera.
-		song.lines.indices.filter { li -> byLine[li] != null || song.lines[li].section != null }
-	}
+	val rows = remember(events, song.lines) { timelineDisplayRows(song.lines, events) }
 	val listState = rememberLazyListState()
-	val currentRow = nowIndex?.let { rows.indexOf(events[it].line) } ?: -1
+	val currentRow = nowIndex?.let { i -> rows.indexOfFirst { row -> row.blocks.any { it.index == i } } } ?: -1
 	LaunchedEffect(currentRow) {
 		if (currentRow >= 0) listState.animateScrollToItem((currentRow - 1).coerceAtLeast(0))
 	}
 	LazyColumn(modifier.fillMaxWidth(), state = listState) {
 		items(rows.size) { r ->
-			val li = rows[r]
-			val blocks = byLine[li].orEmpty()
+			val row = rows[r]
+			val li = row.lineIndex
+			val blocks = row.blocks
+			val line = li?.let { song.lines[it] } ?: SongLine(null, "", emptyList())
 			val first = blocks.firstOrNull()?.index
 			val rowStart = first?.let { starts[it] } ?: 0.0
 			val rowEnd = blocks.lastOrNull()?.let { starts[it.index + 1] } ?: rowStart
 			val inRow = beat >= rowStart && beat < rowEnd
 			val t = first?.takeIf { song.youtubeId != null }?.let { song.videoOffsetMs / 1000.0 + starts[it] * 60.0 / song.bpm }
 			TimelineRow(
-				song.lines[li], blocks, rowStart = rowStart, beatsPerBar = song.beatsPerBar, selected = selected,
+				line, blocks, rowStart = rowStart, beatsPerBar = song.beatsPerBar, selected = selected,
 				timeLabel = t?.let { "%d:%02d".format((it / 60).toInt(), (it % 60).toInt()) },
 				onSelect = onSelect, onMove = onMove, onInsert = onInsert,
 				onBlockTap = onSeek, longPressEnabled = false,

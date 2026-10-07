@@ -67,7 +67,42 @@ import androidx.compose.ui.unit.sp
 import eus.kompaser.model.ChordEvent
 import eus.kompaser.model.SongLine
 import kotlin.math.abs
+import kotlin.math.ceil
+import kotlin.math.max as maxFloat
+import kotlin.math.min as minFloat
 import kotlin.math.roundToInt
+
+private data class TimelineBlockPart(
+	val index: Int,
+	val event: ChordEvent,
+	val start: Float,
+	val beats: Float,
+	val offset: Float,
+)
+
+internal data class TimelineDisplayRow(
+	val lineIndex: Int?,
+	val blocks: List<IndexedValue<ChordEvent>>,
+)
+
+/** Builds lyric rows and puts every rest on its own row immediately after its lyric line. */
+internal fun timelineDisplayRows(lines: List<SongLine>, events: List<ChordEvent>): List<TimelineDisplayRow> {
+	val byLine = events.withIndex().groupBy { it.value.line }
+	val rows = mutableListOf<TimelineDisplayRow>()
+	for (li in lines.indices) {
+		val lineEvents = byLine[li].orEmpty()
+		val chords = lineEvents.filterNot { it.value.isRest }
+		if (chords.isNotEmpty() || lines[li].section != null) rows += TimelineDisplayRow(li, chords)
+		lineEvents.filter { it.value.isRest }.forEach { rows += TimelineDisplayRow(null, listOf(it)) }
+	}
+	for (li in byLine.keys.filter { it !in lines.indices }.sorted()) {
+		val extra = byLine[li].orEmpty()
+		val chords = extra.filterNot { it.value.isRest }
+		if (chords.isNotEmpty()) rows += TimelineDisplayRow(null, chords)
+		extra.filter { it.value.isRest }.forEach { rows += TimelineDisplayRow(null, listOf(it)) }
+	}
+	return rows
+}
 
 /**
  * Operaciones de la línea de tiempo. Ninguna descuadra el resto de la canción: mover un acorde solo
@@ -180,8 +215,9 @@ fun TimelineRow(
 	dragBlocks: Boolean = false,
 	onBlockTap: ((Int) -> Unit)? = null,
 	longPressEnabled: Boolean = true,
+	modifier: Modifier = Modifier,
 ) {
-	Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+	Column(modifier.fillMaxWidth().padding(vertical = 4.dp)) {
 		line.section?.let { Text(it, color = Fun.Purple, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelLarge) }
 		Row(verticalAlignment = Alignment.CenterVertically) {
 			if (timeLabel != null) Text(
@@ -195,63 +231,84 @@ fun TimelineRow(
 		if (blocks.isEmpty()) return@Column
 		val rowBeats = blocks.sumOf { it.value.beats.toDouble() }.toFloat()
 		BoxWithConstraints(Modifier.fillMaxWidth().padding(top = 2.dp)) {
-			// Escala común (hasta 26 dp por pulso) que encaja la fila en el ancho; si así los bloques quedarían
-			// ilegibles (fila muy larga), se mantiene un mínimo y la fila se desplaza en horizontal.
-			val scale: Dp = max(18.dp, min(26.dp, maxWidth / rowBeats.coerceAtLeast(1f)))
+			// Cada fila admite dos compases; lo que excede continúa debajo.
+			val rowCapacity = (beatsPerBar * 2).coerceAtLeast(1)
+			val scale: Dp = max(18.dp, min(26.dp, maxWidth / rowCapacity))
 			val density = LocalDensity.current
 			val scalePx = with(density) { scale.toPx() }
-			Box(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
-			// Arrastrar un bloque: el gesto se detecta en la fila (que no se mueve bajo el dedo, y recibe el gesto
-			// después del bloque tocado); al empezar se mira qué bloque hay debajo y su inicio se mueve de pulso en pulso.
-			val currentBlocks by rememberUpdatedState(blocks)
-			val dragMove by rememberUpdatedState(onMove)
-			val rowDrag = if (!dragBlocks) Modifier else Modifier.pointerInput(Unit) {
-				var target = -1
-				var acc = 0f
-				detectHorizontalDragGestures(
-					onDragStart = { p ->
-						acc = 0f
-						var x0 = 0f
-						target = -1
-						for ((i, e) in currentBlocks) {
-							if (p.x / scalePx < x0 + e.beats) { target = i; break }
-							x0 += e.beats
+			val measureCount = ceil(rowBeats / rowCapacity).toInt().coerceAtLeast(1)
+			val measures = remember(blocks, beatsPerBar) {
+				List(measureCount) { m ->
+					val mStart = m * rowCapacity.toFloat()
+					val mEnd = minFloat(rowBeats, mStart + rowCapacity)
+					var eventStart = 0f
+					buildList {
+						for ((index, event) in blocks) {
+							val eventEnd = eventStart + event.beats
+							val partStart = maxFloat(eventStart, mStart)
+							val partEnd = minFloat(eventEnd, mEnd)
+							if (partEnd > partStart + 1e-4f) add(
+								TimelineBlockPart(index, event, partStart - mStart, partEnd - partStart, partStart - eventStart),
+							)
+							eventStart = eventEnd
 						}
-					},
-				) { change, dx ->
-					if (target < 0) return@detectHorizontalDragGestures
-					change.consume()
-					acc += dx
-					while (acc >= scalePx) { dragMove(target, 1f); acc -= scalePx }
-					while (acc <= -scalePx) { dragMove(target, -1f); acc += scalePx }
-				}
-			}
-			Box(Modifier.width(scale * rowBeats).height(46.dp).then(rowDrag)) {
-				// Rejilla: un trazo por pulso, más marcado en cada compás.
-				val grid = MaterialTheme.colorScheme.outline
-				Canvas(Modifier.fillMaxSize()) {
-					var b = kotlin.math.ceil(rowStart).toFloat()
-					while (b <= rowStart + rowBeats + 1e-3) {
-						val x = ((b - rowStart) * scalePx).toFloat()
-						val bar = abs(b % beatsPerBar) < 1e-3
-						drawLine(grid.copy(alpha = if (bar) 0.9f else 0.35f), Offset(x, 0f), Offset(x, size.height), if (bar) 2.5f else 1f)
-						b += 1f
 					}
 				}
-				var x = 0f
-				for ((i, e) in blocks) {
-					Block(
-						e, i, x, scale, scalePx, selected == i, onSelect, onMove, onInsert,
-						played = playedBefore != null && i < playedBefore,
-						editable = editable, showMarks = showMarks, dimUnmarked = dimUnmarked, onLongPress = onLongPress,
-						onBlockTap = onBlockTap, longPressEnabled = longPressEnabled,
-
-						// Parte ya sonada del bloque actual (0 → 1).
-						progress = if (nowIndex == i && playhead != null) (((playhead - rowStart) - x) / e.beats).toFloat().coerceIn(0f, 1f) else null,
-					)
-					x += e.beats
-				}
 			}
+			Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+				for ((measureIndex, parts) in measures.withIndex()) {
+					val measureStart = measureIndex * rowCapacity.toFloat()
+					val measureBeats = minFloat(rowBeats - measureStart, rowCapacity.toFloat()).coerceAtLeast(0f)
+					Box(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
+						// Arrastrar en cualquier segmento sigue moviendo el acorde original.
+						val currentParts by rememberUpdatedState(parts)
+						val dragMove by rememberUpdatedState(onMove)
+						val rowDrag = if (!dragBlocks) Modifier else Modifier.pointerInput(Unit) {
+							var target = -1
+							var acc = 0f
+							detectHorizontalDragGestures(
+								onDragStart = { p ->
+									acc = 0f
+									val x = p.x / scalePx
+									target = currentParts.firstOrNull { x >= it.start && x < it.start + it.beats }?.index ?: -1
+								},
+							) { change, dx ->
+								if (target < 0) return@detectHorizontalDragGestures
+								change.consume()
+								acc += dx
+								while (acc >= scalePx) { dragMove(target, 1f); acc -= scalePx }
+								while (acc <= -scalePx) { dragMove(target, -1f); acc += scalePx }
+							}
+						}
+						Box(Modifier.width(scale * measureBeats).height(46.dp).then(rowDrag)) {
+							val grid = MaterialTheme.colorScheme.outline
+							Canvas(Modifier.fillMaxSize()) {
+								var b = 0f
+								while (b <= measureBeats + 1e-3f) {
+									val x = b * scalePx
+								val globalBeat = rowStart + measureStart + b
+								val bar = abs(globalBeat % beatsPerBar) < 1e-3
+									drawLine(grid.copy(alpha = if (bar) 0.9f else 0.35f), Offset(x, 0f), Offset(x, size.height), if (bar) 2.5f else 1f)
+									b += 1f
+								}
+							}
+							for (part in parts) {
+								val i = part.index
+								val partEvent = part.event.copy(beats = part.beats)
+								Block(
+									partEvent, i, part.start, scale, scalePx, selected == i, onSelect, onMove,
+										onInsert = { eventIndex, at, chord -> onInsert(eventIndex, part.offset + at, chord) },
+									played = playedBefore != null && i < playedBefore,
+									editable = editable, showMarks = showMarks, dimUnmarked = dimUnmarked, onLongPress = onLongPress,
+									onBlockTap = onBlockTap, longPressEnabled = longPressEnabled,
+									progress = if (nowIndex == i && playhead != null) {
+										((playhead - rowStart - measureStart - part.start) / part.beats).toFloat().coerceIn(0f, 1f)
+									} else null,
+								)
+							}
+						}
+					}
+				}
 			}
 		}
 	}
