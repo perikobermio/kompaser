@@ -5,8 +5,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
@@ -61,8 +59,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.max
-import androidx.compose.ui.unit.min
 import androidx.compose.ui.unit.sp
 import eus.kompaser.model.ChordEvent
 import eus.kompaser.model.SongLine
@@ -247,9 +243,8 @@ fun TimelineRow(
 		BoxWithConstraints(Modifier.fillMaxWidth().padding(top = 2.dp)) {
 			// Cada fila admite dos compases; lo que excede continúa debajo.
 			val rowCapacity = (beatsPerBar * 2).coerceAtLeast(1)
-			val scale: Dp = max(18.dp, min(26.dp, maxWidth / rowCapacity))
+			val timelineWidth = maxWidth
 			val density = LocalDensity.current
-			val scalePx = with(density) { scale.toPx() }
 			val measureCount = ceil(rowBeats / rowCapacity).toInt().coerceAtLeast(1)
 			val measures = remember(blocks, beatsPerBar) {
 				List(measureCount) { m ->
@@ -272,8 +267,9 @@ fun TimelineRow(
 			Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
 				for ((measureIndex, parts) in measures.withIndex()) {
 					val measureStart = measureIndex * rowCapacity.toFloat()
-					val measureBeats = minFloat(rowBeats - measureStart, rowCapacity.toFloat()).coerceAtLeast(0f)
-					Box(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
+					val scale: Dp = timelineWidth / rowCapacity
+					val scalePx = with(density) { scale.toPx() }
+					Box(Modifier.fillMaxWidth()) {
 						// Arrastrar en cualquier segmento sigue moviendo el acorde original.
 						val currentParts by rememberUpdatedState(parts)
 						val dragMove by rememberUpdatedState(onMove)
@@ -294,11 +290,11 @@ fun TimelineRow(
 								while (acc <= -scalePx) { dragMove(target, -1f); acc += scalePx }
 							}
 						}
-						Box(Modifier.width(scale * measureBeats).height(46.dp).then(rowDrag)) {
+						Box(Modifier.width(timelineWidth).height(46.dp).then(rowDrag)) {
 							val grid = MaterialTheme.colorScheme.outline
 							Canvas(Modifier.fillMaxSize()) {
 								var b = 0f
-								while (b <= measureBeats + 1e-3f) {
+								while (b <= rowCapacity + 1e-3f) {
 									val x = b * scalePx
 								val globalBeat = rowStart + measureStart + b
 								val bar = abs(globalBeat % beatsPerBar) < 1e-3
@@ -315,6 +311,8 @@ fun TimelineRow(
 									played = playedBefore != null && i < playedBefore,
 									editable = editable, showMarks = showMarks, dimUnmarked = dimUnmarked, onLongPress = onLongPress,
 									onBlockTap = onBlockTap, longPressEnabled = longPressEnabled,
+									continuesBefore = part.offset > 1e-3f,
+									continuesAfter = part.offset + part.beats < part.event.beats - 1e-3f,
 									progress = if (nowIndex == i && playhead != null) {
 										((playhead - rowStart - measureStart - part.start) / part.beats).toFloat().coerceIn(0f, 1f)
 									} else null,
@@ -336,14 +334,21 @@ private fun Block(
 	editable: Boolean = true, showMarks: Boolean = false, dimUnmarked: Boolean = false,
 	onLongPress: ((Int) -> Unit)? = null, dragBlock: Boolean = false,
 	onBlockTap: ((Int) -> Unit)? = null, longPressEnabled: Boolean = true,
+	continuesBefore: Boolean = false, continuesAfter: Boolean = false,
 ) {
 	var menuAt by remember { mutableStateOf<Float?>(null) }
 	val move by rememberUpdatedState(onMove)
+	val blockShape = RoundedCornerShape(
+		topStart = if (continuesBefore) 0.dp else 8.dp,
+		topEnd = if (continuesAfter) 0.dp else 8.dp,
+		bottomEnd = if (continuesAfter) 0.dp else 8.dp,
+		bottomStart = if (continuesBefore) 0.dp else 8.dp,
+	)
 	Box(
 		Modifier.offset(x = scale * startBeats).width(scale * e.beats).fillMaxHeight().padding(horizontal = 1.dp, vertical = 3.dp)
 			.alpha(if (dimUnmarked && !e.manual) 0.45f else 1f)
-			.clip(RoundedCornerShape(8.dp)).background(blockColor(e))
-			.then(if (isSelected) Modifier.border(2.5.dp, Fun.Coral, RoundedCornerShape(8.dp)) else Modifier)
+			.clip(blockShape).background(blockColor(e))
+			.then(if (isSelected) Modifier.border(2.5.dp, Fun.Coral, blockShape) else Modifier)
 			.pointerInput(i) {
 				detectTapGestures(
 					onTap = { onBlockTap?.invoke(i) ?: onSelect(i) },

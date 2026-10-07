@@ -431,10 +431,10 @@ fun TapScreen(song: Song, onBack: () -> Unit, onSave: (Song) -> Unit, onSaveStay
 		},
 	) { pad ->
 		Box(Modifier.fillMaxSize().padding(pad)) {
-			Column(Modifier.fillMaxSize().padding(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-				YouTubeBox(videoId, video, Modifier.fillMaxWidth().aspectRatio(16f / 9f))
+			Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+				YouTubeBox(videoId, video, Modifier.fillMaxWidth().padding(horizontal = 12.dp).aspectRatio(16f / 9f))
 					TapTimeline(
-						song, events, starts, cursor, playBeat, Modifier.weight(1f),
+					song, events, starts, cursor, playBeat, Modifier.weight(1f).padding(horizontal = 8.dp),
 						onSelect = { i -> startFrom(i); selected = i },
 						onBlockTap = { i -> if (events[i].isRest) picking = i else { startFrom(i); selected = i } },
 						onLongPress = { i -> picking = i },
@@ -444,7 +444,7 @@ fun TapScreen(song: Song, onBack: () -> Unit, onSave: (Song) -> Unit, onSaveStay
 
 				// Controles para marcar, insertar una pausa y controlar el vídeo.
 				val next = events.getOrNull(cursor) ?: sourceEvents.getOrNull(sourceCursor)
-				Row(Modifier.fillMaxWidth().height(112.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+				Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp).height(112.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
 					Box(
 						Modifier.weight(1.35f).fillMaxHeight().clip(RoundedCornerShape(24.dp))
 							.background(if (next == null) Brush.linearGradient(listOf(Fun.Turquoise, Color(0xFF3DD9C1))) else Fun.current)
@@ -543,14 +543,17 @@ fun TapScreen(song: Song, onBack: () -> Unit, onSave: (Song) -> Unit, onSaveStay
 					)
 					Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
 						for (beats in 1..4) FilterChip(
-							abs(beats - e.beats) < 1e-3f, onClick = { setDuration(i, beats.toFloat()) },
+							selected = abs(beats - e.beats) < 1e-3f,
+							onClick = { setDuration(i, beats.toFloat()) },
+							modifier = Modifier.width(44.dp),
 							label = { Text(beats.toString()) },
 						)
 							Box {
 								FilterChip(
 									selected = false,
-									onClick = { durationMenu = true },
-									label = { Text("1–15") },
+								onClick = { durationMenu = true },
+									modifier = Modifier.width(44.dp),
+									label = {},
 									leadingIcon = { Icon(Icons.Filled.Add, contentDescription = "Elegir duración") },
 								)
 							DropdownMenu(expanded = durationMenu, onDismissRequest = { durationMenu = false }) {
