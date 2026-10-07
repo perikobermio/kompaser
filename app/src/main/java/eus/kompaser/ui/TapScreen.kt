@@ -310,12 +310,12 @@ fun TapScreen(song: Song, onBack: () -> Unit, onSave: (Song) -> Unit, onSaveStay
 		val delta = deltaBeats * secPerBeat
 		val out = events.toMutableList()
 		out[i] = current.copy(beats = newBeats, manual = true)
-		if (deltaBeats > 1e-6f) {
+		if (kotlin.math.abs(deltaBeats) > 1e-6f) {
 			for (k in i + 1 until out.size) out[k].t?.let { out[k] = out[k].copy(t = it + delta) }
 		}
-		// Evita que normalize vuelva a alargar un acorde acortado para cubrir el espacio siguiente.
 		applyMarked(out, cursor)
 		if (deltaBeats > 1e-6f) notice = "Los siguientes compases se retrasan ${fmtBeatsText(deltaBeats.toDouble())}"
+		else if (deltaBeats < -1e-6f) notice = "Los siguientes compases se adelantan ${fmtBeatsText(-deltaBeats.toDouble())}"
 	}
 
 	/** Índices de los acordes de la misma línea de letra que [i] (consecutivos). */
@@ -365,7 +365,7 @@ fun TapScreen(song: Song, onBack: () -> Unit, onSave: (Song) -> Unit, onSaveStay
 		val out = events.toMutableList().also { it.removeAt(i) }
 		val delta = removed.beats * secPerBeat
 		for (k in i until out.size) out[k].t?.let { out[k] = out[k].copy(t = it - delta) }
-		apply(out, if (i < cursor) cursor - 1 else cursor)
+		applyMarked(out, if (i < cursor) cursor - 1 else cursor)
 	}
 
 	fun startFrom(i: Int) {
@@ -554,7 +554,13 @@ fun TapScreen(song: Song, onBack: () -> Unit, onSave: (Song) -> Unit, onSaveStay
 								onClick = { durationMenu = true },
 									modifier = Modifier.width(44.dp),
 									label = {},
-									leadingIcon = { Icon(Icons.Filled.Add, contentDescription = "Elegir duración") },
+								leadingIcon = {
+									Icon(
+										Icons.Filled.Add,
+										contentDescription = "Elegir duración",
+										tint = MaterialTheme.colorScheme.onSurfaceVariant,
+									)
+								},
 								)
 							DropdownMenu(expanded = durationMenu, onDismissRequest = { durationMenu = false }) {
 								for (beats in 1..15) DropdownMenuItem(

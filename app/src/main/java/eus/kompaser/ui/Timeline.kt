@@ -368,7 +368,7 @@ private fun Block(
 		if (played) Box(Modifier.fillMaxSize().background(Fun.Turquoise.copy(alpha = 0.35f)))
 		if (progress != null) Box(Modifier.fillMaxHeight().fillMaxWidth(progress).background(Fun.Turquoise.copy(alpha = 0.7f)))
 		BasicText(
-			if (e.isRest) "pausa" else e.chord,
+			if (continuesBefore) "" else if (e.isRest) "pausa" else e.chord,
 			Modifier.align(Alignment.Center).padding(horizontal = 6.dp),
 			style = TextStyle(fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.onSurface, textAlign = TextAlign.Center),
 			maxLines = 1, softWrap = false,
@@ -379,7 +379,7 @@ private fun Block(
 			fontSize = 8.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
 		)
 		// Punto en los marcados a mano.
-		if (showMarks && e.manual) Box(
+		if (showMarks && e.manual && !continuesBefore) Box(
 			Modifier.align(Alignment.TopStart).padding(start = 6.dp, top = 4.dp).size(7.dp).clip(CircleShape).background(Fun.Purple),
 		)
 		// Asa para arrastrar el inicio del acorde.
