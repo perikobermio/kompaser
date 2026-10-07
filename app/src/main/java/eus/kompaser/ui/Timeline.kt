@@ -286,13 +286,16 @@ fun TimelineRow(
 						}
 						Box(Modifier.width(timelineWidth).height(46.dp).then(rowDrag)) {
 							val grid = MaterialTheme.colorScheme.outline
+							val chordStarts = parts.filter { it.offset <= 1e-3f && !it.event.isRest }.map { it.start }
 							Canvas(Modifier.fillMaxSize()) {
 								var b = 0f
 								while (b <= rowCapacity + 1e-3f) {
 									val x = b * scalePx
 								val globalBeat = rowStart + measureStart + b
-								val bar = abs(globalBeat % beatsPerBar) < 1e-3
-									drawLine(grid.copy(alpha = if (bar) 0.9f else 0.35f), Offset(x, 0f), Offset(x, size.height), if (bar) 2.5f else 1f)
+									val bar = abs(globalBeat % beatsPerBar) < 1e-3
+									if (chordStarts.none { abs(it - b) < 1e-3f }) {
+										drawLine(grid.copy(alpha = if (bar) 0.9f else 0.35f), Offset(x, 0f), Offset(x, size.height), if (bar) 2.5f else 1f)
+									}
 									b += 1f
 								}
 							}
@@ -308,6 +311,7 @@ fun TimelineRow(
 						onBlockDoubleTap = onBlockDoubleTap,
 									continuesBefore = part.offset > 1e-3f,
 									continuesAfter = part.offset + part.beats < part.event.beats - 1e-3f,
+									labelBeats = part.event.beats,
 									progress = if (nowIndex == i && playhead != null) {
 										((playhead - rowStart - measureStart - part.start) / part.beats).toFloat().coerceIn(0f, 1f)
 									} else null,
@@ -331,6 +335,7 @@ private fun Block(
 	onBlockTap: ((Int) -> Unit)? = null, longPressEnabled: Boolean = true,
 	continuesBefore: Boolean = false, continuesAfter: Boolean = false,
 	onBlockDoubleTap: ((Int) -> Unit)? = null,
+	labelBeats: Float = e.beats,
 ) {
 	var menuAt by remember { mutableStateOf<Float?>(null) }
 	val move by rememberUpdatedState(onMove)
@@ -371,8 +376,8 @@ private fun Block(
 			maxLines = 1, softWrap = false,
 			autoSize = TextAutoSize.StepBased(minFontSize = 7.sp, maxFontSize = 16.sp),
 		)
-		Text(
-			fmtBeats(e.beats), Modifier.align(Alignment.BottomEnd).padding(end = 4.dp),
+		if (!continuesAfter) Text(
+			fmtBeats(labelBeats), Modifier.align(Alignment.BottomEnd).padding(end = 4.dp),
 			fontSize = 8.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
 		)
 		// El punto identifica un acorde de la secuencia ya marcado; los bloques vacíos o personalizados no lo llevan.
