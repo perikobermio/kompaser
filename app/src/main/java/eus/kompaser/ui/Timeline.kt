@@ -226,6 +226,7 @@ fun TimelineRow(
 	onBlockTap: ((Int) -> Unit)? = null,
 	longPressEnabled: Boolean = true,
 	modifier: Modifier = Modifier,
+	onBlockDoubleTap: ((Int) -> Unit)? = null,
 ) {
 	Column(modifier.fillMaxWidth().padding(vertical = 4.dp)) {
 		line.section?.let { Text(it, color = Fun.Purple, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelLarge) }
@@ -310,7 +311,8 @@ fun TimelineRow(
 										onInsert = { eventIndex, at, chord -> onInsert(eventIndex, part.offset + at, chord) },
 									played = playedBefore != null && i < playedBefore,
 									editable = editable, showMarks = showMarks, dimUnmarked = dimUnmarked, onLongPress = onLongPress,
-									onBlockTap = onBlockTap, longPressEnabled = longPressEnabled,
+						onBlockTap = onBlockTap, longPressEnabled = longPressEnabled,
+						onBlockDoubleTap = onBlockDoubleTap,
 									continuesBefore = part.offset > 1e-3f,
 									continuesAfter = part.offset + part.beats < part.event.beats - 1e-3f,
 									progress = if (nowIndex == i && playhead != null) {
@@ -335,6 +337,7 @@ private fun Block(
 	onLongPress: ((Int) -> Unit)? = null, dragBlock: Boolean = false,
 	onBlockTap: ((Int) -> Unit)? = null, longPressEnabled: Boolean = true,
 	continuesBefore: Boolean = false, continuesAfter: Boolean = false,
+	onBlockDoubleTap: ((Int) -> Unit)? = null,
 ) {
 	var menuAt by remember { mutableStateOf<Float?>(null) }
 	val move by rememberUpdatedState(onMove)
@@ -352,6 +355,7 @@ private fun Block(
 			.pointerInput(i) {
 				detectTapGestures(
 					onTap = { onBlockTap?.invoke(i) ?: onSelect(i) },
+					onDoubleTap = { onBlockDoubleTap?.invoke(i) },
 					onLongPress = { p ->
 						if (longPressEnabled) {
 							if (onLongPress != null) onLongPress(i)

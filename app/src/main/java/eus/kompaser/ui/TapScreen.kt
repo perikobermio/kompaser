@@ -151,7 +151,7 @@ fun TapScreen(song: Song, onBack: () -> Unit, onSave: (Song) -> Unit, onSaveStay
 	}
 
 	/** Marca el inicio del evento actual, sin imponer un máximo de tiempos a la línea. */
-	fun markAt(t: Double) {
+	fun markAt(t: Double, replacement: ChordEvent? = null) {
 		if (cursor >= events.size) {
 			val last = events.lastOrNull() ?: return
 			val lastStart = last.t ?: return
@@ -163,7 +163,8 @@ fun TapScreen(song: Song, onBack: () -> Unit, onSave: (Song) -> Unit, onSaveStay
 		}
 
 		val out = events.toMutableList()
-		val current = out[cursor]
+		val original = out[cursor]
+		val current = replacement?.let { original.copy(chord = it.chord, pos = it.pos) } ?: original
 		val oldStart = current.t ?: t
 		val newStart: Double
 		var placedLine = current.line
@@ -237,7 +238,11 @@ fun TapScreen(song: Song, onBack: () -> Unit, onSave: (Song) -> Unit, onSaveStay
 	fun markNext() {
 		val t = now()
 		when {
-			cursor < events.size -> markAt(t)
+			cursor < events.size -> {
+				val source = sourceEvents.getOrNull(sourceCursor)
+				markAt(t, source)
+				if (source != null) sourceCursor++
+			}
 			sourceCursor < sourceEvents.size -> {
 				if (appendEvent(sourceEvents[sourceCursor], t)) sourceCursor++
 			}
@@ -368,11 +373,24 @@ fun TapScreen(song: Song, onBack: () -> Unit, onSave: (Song) -> Unit, onSaveStay
 		applyMarked(out, if (i < cursor) cursor - 1 else cursor)
 	}
 
-	fun startFrom(i: Int) {
+	fun selectForInsertion(i: Int) {
 		val event = events.getOrNull(i) ?: return
-		// El acorde tocado fija el punto de entrada; el siguiente queda listo para marcar.
-		if (!event.manual) apply(events.toMutableList().also { it[i] = event.copy(manual = true) }, i + 1)
-		else cursor = i + 1
+		selected = i
+		// Seleccionar un acorde sirve como referencia; el siguiente por marcar es el que viene después.
+		cursor = (i + 1).coerceAtMost(events.size)
+		val exact = sourceEvents.indexOfFirst { it.line == event.line && it.pos == event.pos && event.pos >= 0 }
+		val nextInLine = sourceEvents.indexOfFirst {
+			it.line > event.line || (it.line == event.line && it.pos >= event.pos.coerceAtLeast(0))
+		}
+		sourceCursor = when {
+			exact >= 0 -> exact + 1
+			nextInLine >= 0 -> nextInLine
+			else -> sourceEvents.size
+		}
+	}
+
+	fun playFrom(i: Int) {
+		val event = events.getOrNull(i) ?: return
 		val sec = (event.t ?: offset).coerceAtLeast(0.0).toFloat()
 		video.player?.seekTo(sec)
 		video.player?.play()
@@ -435,8 +453,9 @@ fun TapScreen(song: Song, onBack: () -> Unit, onSave: (Song) -> Unit, onSaveStay
 				YouTubeBox(videoId, video, Modifier.fillMaxWidth().padding(horizontal = 12.dp).aspectRatio(16f / 9f))
 					TapTimeline(
 					song, events, starts, cursor, playBeat, Modifier.weight(1f).padding(horizontal = 8.dp),
-						onSelect = { i -> startFrom(i); selected = i },
-						onBlockTap = { i -> if (events[i].isRest) picking = i else { startFrom(i); selected = i } },
+						onSelect = { i -> selectForInsertion(i) },
+						onBlockTap = { i -> if (events[i].isRest) picking = i else selectForInsertion(i) },
+						onBlockDoubleTap = { i -> playFrom(i) },
 						onLongPress = { i -> picking = i },
 						onDrag = { i, d -> drag(i, d) },
 						selected = selected,
@@ -620,7 +639,8 @@ fun TapScreen(song: Song, onBack: () -> Unit, onSave: (Song) -> Unit, onSaveStay
 @Composable
 private fun TapTimeline(
 	song: Song, events: List<ChordEvent>, starts: DoubleArray, cursor: Int, playBeat: Double, modifier: Modifier,
-	onSelect: (Int) -> Unit, onBlockTap: (Int) -> Unit, onLongPress: (Int) -> Unit, onDrag: (Int, Float) -> Unit,
+	onSelect: (Int) -> Unit, onBlockTap: (Int) -> Unit, onBlockDoubleTap: (Int) -> Unit,
+	onLongPress: (Int) -> Unit, onDrag: (Int, Float) -> Unit,
 	selected: Int?,
 ) {
 	val rows = remember(events, song.lines) { timelineDisplayRows(song.lines, events) }
@@ -645,6 +665,7 @@ private fun TapTimeline(
 					timeLabel = t?.let { "%d:%02d".format((it / 60).toInt(), (it % 60).toInt()) },
 					onSelect = onSelect, onMove = onDrag, onInsert = { _, _, _ -> }, dragBlocks = true,
 					onBlockTap = onBlockTap,
+					onBlockDoubleTap = onBlockDoubleTap,
 					nowIndex = if (inRow) nowIdx else null, playhead = if (inRow) playBeat else null,
 					editable = false, showMarks = true, dimUnmarked = true, onLongPress = onLongPress,
 				)
