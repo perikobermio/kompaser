@@ -171,8 +171,19 @@ fun TapScreen(song: Song, onBack: () -> Unit, onSave: (Song) -> Unit, onSaveStay
 		val oldStart = current.t ?: t
 		val newStart: Double
 		if (current.isRest) {
-			// Marcar una pausa mueve su inicio y lo que viene después, pero nunca el compás anterior.
-			newStart = t
+			// Al rellenar un hueco creado con VACÍO, conserva su inicio: si el vídeo está pausado,
+			// `t` puede ser la posición de pausa y movería también todos los acordes posteriores.
+			newStart = if (!video.playing) {
+				oldStart
+			} else {
+				if (cursor > 0) {
+					val previous = out[cursor - 1]
+					val previousStart = previous.t ?: (t - previous.beats * secPerBeat)
+					val elapsed = kotlin.math.round((t - previousStart) / secPerBeat).toInt().coerceAtLeast(1)
+					out[cursor - 1] = previous.copy(beats = elapsed.toFloat())
+				}
+				t
+			}
 		} else if (cursor > 0) {
 			val previous = out[cursor - 1]
 			val previousStart = previous.t ?: (t - previous.beats * secPerBeat)
@@ -180,8 +191,8 @@ fun TapScreen(song: Song, onBack: () -> Unit, onSave: (Song) -> Unit, onSaveStay
 				kotlin.math.round((t - previousStart) / secPerBeat).toInt().coerceAtLeast(1)
 			} else previous.beats.roundToInt().coerceAtLeast(1)
 			out[cursor - 1] = previous.copy(beats = elapsed.toFloat())
-			// Conserva la rejilla redondeada y la línea indicada por la secuencia de la partitura.
-			newStart = previousStart + elapsed * secPerBeat
+			// En reproducción, conserva el instante real del vídeo y redondea solo los tiempos.
+			newStart = if (video.playing) t else previousStart + elapsed * secPerBeat
 		} else {
 			newStart = t
 		}
@@ -208,14 +219,14 @@ fun TapScreen(song: Song, onBack: () -> Unit, onSave: (Song) -> Unit, onSaveStay
 			duration = defaultDuration
 		} else {
 			if (prev.isRest) {
-				start = prevTime + prev.beats * secPerBeat
+				start = if (video.playing) t else prevTime + prev.beats * secPerBeat
 				duration = defaultDuration
 			} else {
 				val elapsed = if (video.playing) {
 					kotlin.math.round((t - prevTime) / secPerBeat).toInt().coerceAtLeast(1)
 				} else prev.beats.roundToInt().coerceAtLeast(1)
 				out[prevIndex] = prev.copy(beats = elapsed.toFloat())
-				start = prevTime + elapsed * secPerBeat
+				start = if (video.playing) t else prevTime + elapsed * secPerBeat
 				duration = defaultDuration
 			}
 		}

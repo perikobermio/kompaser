@@ -11,7 +11,6 @@ import com.pierfrancescosoffritti.androidyoutubeplayer.core.player.YouTubePlayer
 import com.pierfrancescosoffritti.androidyoutubeplayer.core.player.listeners.AbstractYouTubePlayerListener
 import com.pierfrancescosoffritti.androidyoutubeplayer.core.player.options.IFramePlayerOptions
 import com.pierfrancescosoffritti.androidyoutubeplayer.core.player.views.YouTubePlayerView
-import kotlin.math.abs
 
 /**
  * Posición del vídeo. El reproductor solo informa unas pocas veces por segundo, así que
@@ -29,9 +28,8 @@ class VideoSync {
 	fun update(s: Float, force: Boolean = false) {
 		val now = System.nanoTime()
 		val predicted = seconds(now)
-		// Ignora pequeños retrocesos (el aviso llega con retraso) para que el acorde no parpadee.
-		if (!force && playing && s < predicted && abs(predicted - s) < 0.3) return
-		sec = s.toDouble()
+		// Corrige el reloj poco a poco: ignorar el error lo acumula; copiar cada aviso lo retrasa.
+		sec = if (!force && playing) predicted + (s.toDouble() - predicted).coerceIn(-0.05, 0.05) else s.toDouble()
 		at = now
 	}
 
