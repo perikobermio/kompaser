@@ -139,11 +139,12 @@ fun TapScreen(song: Song, onBack: () -> Unit, onSave: (Song) -> Unit, onSaveStay
 		view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
 	}
 
-	/** Guarda una secuencia ya encajada a pulsos enteros sin recalcularla desde segundos. */
+	/** Guarda las duraciones en pulsos enteros, conservando los instantes reales marcados en el vídeo. */
 	fun applyMarked(evs: List<ChordEvent>, newCursor: Int) {
 		history += events to cursor
 		events = evs.map { e ->
-			if (e.manual) e.copy(beats = kotlin.math.round(e.beats).toFloat().coerceAtLeast(1f)) else e
+			val beats = kotlin.math.round(e.beats).toFloat().coerceAtLeast(1f)
+			e.copy(beats = beats)
 		}
 		cursor = newCursor.coerceIn(0, events.size)
 		changed = true
@@ -250,14 +251,22 @@ fun TapScreen(song: Song, onBack: () -> Unit, onSave: (Song) -> Unit, onSaveStay
 		}
 	}
 
-	/** Inserta una pausa de cuatro tiempos después del acorde seleccionado. */
+	/** Inserta una pausa de cuatro tiempos después del bloque seleccionado, en la primera línea con sitio. */
 	fun insertBlank() {
 		val anchorIndex = selected?.takeIf { it in events.indices } ?: events.lastIndex
 		val insertAt = if (anchorIndex >= 0) anchorIndex + 1 else 0
 		val anchor = events.getOrNull(anchorIndex)
-		val line = anchor?.line ?: sourceEvents.getOrNull(sourceCursor)?.line ?: 0
+		val firstLine = anchor?.line ?: sourceEvents.getOrNull(sourceCursor)?.line ?: 0
 		val start = anchor?.let { (it.t ?: now()) + it.beats * secPerBeat } ?: now()
 		val duration = 4f
+		val lineCapacity = maxOf(bar * 2, duration)
+		var line = firstLine
+		val precedingRests = if (anchor?.isRest == true) {
+			var first = anchorIndex
+			while (first > 0 && events[first - 1].isRest && events[first - 1].line == firstLine) first--
+			(first until insertAt).sumOf { events[it].beats.toDouble() }.toFloat()
+		} else 0f
+		if (precedingRests + duration > lineCapacity + 1e-6f) line++
 		val shift = duration * secPerBeat
 		val out = events.toMutableList()
 		out.add(insertAt, ChordEvent("", duration, line, -1, start, manual = true))
@@ -454,7 +463,7 @@ fun TapScreen(song: Song, onBack: () -> Unit, onSave: (Song) -> Unit, onSaveStay
 					TapTimeline(
 					song, events, starts, cursor, playBeat, Modifier.weight(1f).padding(horizontal = 8.dp),
 						onSelect = { i -> selectForInsertion(i) },
-						onBlockTap = { i -> if (events[i].isRest) picking = i else selectForInsertion(i) },
+					onBlockTap = { i -> selectForInsertion(i) },
 						onBlockDoubleTap = { i -> playFrom(i) },
 						onLongPress = { i -> picking = i },
 						onDrag = { i, d -> drag(i, d) },

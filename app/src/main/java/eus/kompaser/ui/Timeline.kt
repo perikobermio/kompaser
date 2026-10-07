@@ -86,23 +86,12 @@ internal fun timelineDisplayRows(lines: List<SongLine>, events: List<ChordEvent>
 	val byLine = events.withIndex().groupBy { it.value.line }
 	val rows = mutableListOf<TimelineDisplayRow>()
 	fun appendInSequence(lineIndex: Int?, lineEvents: List<IndexedValue<ChordEvent>>, showEmptyLine: Boolean) {
-		val chordRun = mutableListOf<IndexedValue<ChordEvent>>()
-		var emittedLine = false
-		fun flushChords() {
-			if (chordRun.isNotEmpty()) {
-				rows += TimelineDisplayRow(lineIndex, chordRun.toList())
-				chordRun.clear()
-				emittedLine = true
-			}
-		}
-		for (event in lineEvents) {
-			if (event.value.isRest) {
-				flushChords()
-				rows += TimelineDisplayRow(null, listOf(event))
-			} else chordRun += event
-		}
-		flushChords()
-		if (!emittedLine && showEmptyLine) rows += TimelineDisplayRow(lineIndex, emptyList())
+		if (lineEvents.isNotEmpty()) {
+			// Mantiene pausas y acordes adyacentes en la misma línea de tiempo.
+			// Las líneas compuestas solo por pausas siguen apareciendo sin letra.
+			val rowLine = lineIndex.takeIf { lineEvents.any { event -> !event.value.isRest } }
+			rows += TimelineDisplayRow(rowLine, lineEvents)
+		} else if (showEmptyLine) rows += TimelineDisplayRow(lineIndex, emptyList())
 	}
 	for (li in lines.indices) {
 		val lineEvents = byLine[li].orEmpty()
@@ -163,7 +152,11 @@ object Timeline {
 			if (k > 0 && t[k] < t[k - 1] + FINE * secPerBeat) t[k] = t[k - 1] + FINE * secPerBeat
 		}
 		return evs.mapIndexed { k, e ->
-			val b = if (k < n - 1) (((t[k + 1] - t[k]) / secPerBeat * 16).roundToInt() / 16f).coerceAtLeast(FINE) else e.beats
+			val b = when {
+				e.manual -> kotlin.math.round(e.beats).toFloat().coerceAtLeast(1f)
+				k < n - 1 -> (((t[k + 1] - t[k]) / secPerBeat * 16).roundToInt() / 16f).coerceAtLeast(FINE)
+				else -> e.beats
+			}
 			e.copy(t = t[k].coerceAtLeast(0.0), beats = b)
 		}
 	}

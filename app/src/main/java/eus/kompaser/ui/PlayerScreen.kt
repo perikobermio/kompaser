@@ -147,6 +147,19 @@ fun PlayerScreen(
 
 	fun beatNow(now: Long): Double = if (playing) clock.beat + (now - clock.nanos) / 60e9 * bpm else beat
 
+	/** Convierte el instante real del vídeo a la rejilla de pulsos usando las marcas de cada evento. */
+	fun beatAtVideoTime(second: Double): Double? {
+		if (events.isEmpty() || events.any { it.t == null }) return null
+		val firstTime = events.first().t!!
+		val index = events.indexOfLast { it.t!! <= second }
+		if (index < 0) return (second - firstTime) * bpm / 60.0
+		val event = events[index]
+		val start = event.t!!
+		val end = events.getOrNull(index + 1)?.t ?: (start + event.beats * 60.0 / bpm)
+		val fraction = ((second - start) / (end - start).coerceAtLeast(1e-3)).coerceIn(0.0, 1.0)
+		return starts[index] + fraction * event.beats
+	}
+
 	fun play() {
 		if (videoOn) {
 			video.player?.play()
@@ -161,7 +174,8 @@ fun PlayerScreen(
 	}
 
 	fun pause() {
-		beat = beatNow(System.nanoTime())
+		val now = System.nanoTime()
+		beat = if (videoOn) beatAtVideoTime(video.seconds(now)) ?: beatNow(now) else beatNow(now)
 		playing = false
 		if (videoOn) {
 			video.player?.pause()
@@ -174,8 +188,7 @@ fun PlayerScreen(
 		val index = i.coerceIn(0, events.size - 1)
 		val b = starts[index]
 		if (videoOn) {
-			// El reloj del reproductor es el BPM: los tiempos individuales marcados no deben desplazar el vídeo.
-			val sec = (song.videoOffsetMs / 1000.0 + b * 60.0 / bpm).toFloat().coerceAtLeast(0f)
+			val sec = (events[index].t ?: (song.videoOffsetMs / 1000.0 + b * 60.0 / bpm)).toFloat().coerceAtLeast(0f)
 			video.player?.seekTo(sec)
 			video.update(sec, force = true)
 			videoClockStarted = true
@@ -191,8 +204,8 @@ fun PlayerScreen(
 		val now = System.nanoTime()
 		if (video.playing) {
 			if (!videoClockStarted) {
-				val firstChord = song.videoOffsetMs / 1000.0
-				beat = (video.seconds(now) - firstChord) / 60.0 * bpm
+				beat = beatAtVideoTime(video.seconds(now))
+					?: (video.seconds(now) - song.videoOffsetMs / 1000.0) / 60.0 * bpm
 				videoClockStarted = true
 			}
 			if (!playing) {
@@ -202,7 +215,7 @@ fun PlayerScreen(
 				if (metronomeOn) metronome.click(Math.floorMod(floor(beat).toInt(), bpb) == 0)
 			}
 		} else if (playing) {
-			beat = beatNow(now)
+			beat = beatAtVideoTime(video.seconds(now)) ?: beatNow(now)
 			playing = false
 		}
 	}
@@ -229,11 +242,11 @@ fun PlayerScreen(
 	}
 
 	val running = if (videoOn) video.playing else playing
-	LaunchedEffect(playing) {
+	LaunchedEffect(playing, videoOn) {
 		if (!playing) return@LaunchedEffect
 		var last = floor(beatNow(System.nanoTime())).toInt()
 		while (isActive) withFrameNanos { now ->
-			val b = beatNow(now)
+			val b = if (videoOn) beatAtVideoTime(video.seconds(now)) ?: beatNow(now) else beatNow(now)
 			val bi = floor(b).toInt()
 			if (bi != last) {
 				if (metronomeOn && b < total) metronome.click(Math.floorMod(bi, bpb) == 0)
