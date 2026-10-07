@@ -375,8 +375,8 @@ private fun Block(
 			fmtBeats(e.beats), Modifier.align(Alignment.BottomEnd).padding(end = 4.dp),
 			fontSize = 8.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
 		)
-		// Punto en los marcados a mano.
-		if (showMarks && e.manual && !continuesBefore) Box(
+		// El punto identifica un acorde de la secuencia ya marcado; los bloques vacíos o personalizados no lo llevan.
+		if (showMarks && e.manual && !e.isRest && e.pos >= 0 && !continuesBefore) Box(
 			Modifier.align(Alignment.TopStart).padding(start = 6.dp, top = 4.dp).size(7.dp).clip(CircleShape).background(Fun.Purple),
 		)
 		// Asa para arrastrar el inicio del acorde.

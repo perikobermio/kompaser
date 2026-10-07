@@ -69,11 +69,11 @@ import eus.kompaser.model.SongLine
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlin.math.abs
+import kotlin.math.roundToInt
 
 /**
- * Marca cada cambio de acorde en orden. La primera pulsación fija el inicio; cada «Siguiente» calcula
- * cuántos tiempos han pasado según el BPM y encaja el cambio en esa rejilla. «Vacío» añade un acorde
- * pendiente en esa misma secuencia. Se puede guardar a medias y seguir otro día.
+ * Marca cada cambio de acorde en orden. Con el vídeo en marcha mide los tiempos; pausado usa cuatro
+ * tiempos por acorde. «Vacío» añade una pausa en la secuencia de la partitura. Se puede guardar a medias.
  */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
@@ -98,7 +98,7 @@ fun TapScreen(song: Song, onBack: () -> Unit, onSave: (Song) -> Unit, onSaveStay
 			for (event in song.events) {
 				if (event.chord == UNKNOWN_CHORD && event.pos == -1) continue
 				val source = sourceEvents.getOrNull(progress)
-				if (source == null || event.chord != source.chord || event.line != source.line || event.pos != source.pos) {
+				if (source == null || event.chord != source.chord || event.pos != source.pos) {
 					mismatch = true
 					break
 				}
@@ -156,7 +156,9 @@ fun TapScreen(song: Song, onBack: () -> Unit, onSave: (Song) -> Unit, onSaveStay
 		if (cursor >= events.size) {
 			val last = events.lastOrNull() ?: return
 			val lastStart = last.t ?: return
-			val beats = kotlin.math.round((t - lastStart) / secPerBeat).toInt().coerceAtLeast(1)
+			val beats = if (video.playing) {
+				kotlin.math.round((t - lastStart) / secPerBeat).toInt().coerceAtLeast(1)
+			} else 4
 			applyMarked(events.dropLast(1) + last.copy(beats = beats.toFloat(), manual = true), events.size)
 			selected = null
 			notice = "Final marcado · ${beats} tiempos"
@@ -165,31 +167,26 @@ fun TapScreen(song: Song, onBack: () -> Unit, onSave: (Song) -> Unit, onSaveStay
 
 		val out = events.toMutableList()
 		val original = out[cursor]
-		val current = replacement?.let { original.copy(chord = it.chord, pos = it.pos) } ?: original
+		val current = replacement?.let { original.copy(chord = it.chord, line = it.line, pos = it.pos) } ?: original
 		val oldStart = current.t ?: t
 		val newStart: Double
-		var placedLine = current.line
 		if (current.isRest) {
 			// Marcar una pausa mueve su inicio y lo que viene después, pero nunca el compás anterior.
 			newStart = t
 		} else if (cursor > 0) {
 			val previous = out[cursor - 1]
 			val previousStart = previous.t ?: (t - previous.beats * secPerBeat)
-			val elapsed = kotlin.math.round((t - previousStart) / secPerBeat).toInt().coerceAtLeast(1)
-			val previousEnd = previousStart + elapsed * secPerBeat
+			val elapsed = if (video.playing) {
+				kotlin.math.round((t - previousStart) / secPerBeat).toInt().coerceAtLeast(1)
+			} else previous.beats.roundToInt().coerceAtLeast(1)
 			out[cursor - 1] = previous.copy(beats = elapsed.toFloat())
-			if (!previous.isRest && current.line != previous.line) {
-				var first = cursor - 1
-				while (first > 0 && out[first - 1].line == previous.line && !out[first - 1].isRest) first--
-				val used = (first until cursor).sumOf { out[it].beats.toDouble() }
-				if (used < bar * 2 - 1e-6) placedLine = previous.line
-			}
-			newStart = previousEnd
+			// Conserva la rejilla redondeada y la línea indicada por la secuencia de la partitura.
+			newStart = previousStart + elapsed * secPerBeat
 		} else {
 			newStart = t
 		}
 		val delta = newStart - oldStart
-		out[cursor] = current.copy(t = newStart, line = placedLine, manual = true)
+		out[cursor] = current.copy(t = newStart, manual = true)
 		for (i in cursor + 1 until out.size) out[i].t?.let { out[i] = out[i].copy(t = it + delta) }
 		applyMarked(out, cursor + 1)
 		selected = null
@@ -204,30 +201,22 @@ fun TapScreen(song: Song, onBack: () -> Unit, onSave: (Song) -> Unit, onSaveStay
 		val lineBeats = bar.toInt() * 2
 		val start: Double
 		val duration: Int
-		var eventLine = event.line
+		val eventLine = event.line
+		val defaultDuration = if (video.playing) lineBeats else 4
 		if (prev == null || prevTime == null) {
 			start = t
-			duration = lineBeats
+			duration = defaultDuration
 		} else {
 			if (prev.isRest) {
 				start = prevTime + prev.beats * secPerBeat
-				duration = lineBeats
+				duration = defaultDuration
 			} else {
-				var first = prevIndex
-				while (first > 0 && out[first - 1].line == prev.line && !out[first - 1].isRest) first--
-				val priorBeats = (first until prevIndex).sumOf { out[it].beats.toDouble() }
-				val elapsed = kotlin.math.round((t - prevTime) / secPerBeat).toInt().coerceAtLeast(1)
-				val canJoinPreviousLine = event.line == prev.line || priorBeats + elapsed < lineBeats
-				if (canJoinPreviousLine) {
-					out[prevIndex] = prev.copy(beats = elapsed.toFloat())
-					start = prevTime + elapsed * secPerBeat
-					eventLine = prev.line
-					duration = if (event.line == prev.line) lineBeats else (lineBeats - kotlin.math.round(priorBeats).toInt() - elapsed).coerceAtLeast(1)
-				} else {
-					// Si la línea ya no tiene hueco, el acorde empieza en la línea siguiente.
-						start = maxOf(t, prevTime + prev.beats * secPerBeat)
-					duration = lineBeats
-				}
+				val elapsed = if (video.playing) {
+					kotlin.math.round((t - prevTime) / secPerBeat).toInt().coerceAtLeast(1)
+				} else prev.beats.roundToInt().coerceAtLeast(1)
+				out[prevIndex] = prev.copy(beats = elapsed.toFloat())
+				start = prevTime + elapsed * secPerBeat
+				duration = defaultDuration
 			}
 		}
 		out += event.copy(beats = duration.toFloat(), line = eventLine, t = start, manual = true)
@@ -271,8 +260,8 @@ fun TapScreen(song: Song, onBack: () -> Unit, onSave: (Song) -> Unit, onSaveStay
 		val out = events.toMutableList()
 		out.add(insertAt, ChordEvent("", duration, line, -1, start, manual = true))
 		for (i in insertAt + 1 until out.size) out[i].t?.let { out[i] = out[i].copy(t = it + shift) }
-		val newCursor = if (insertAt <= cursor) cursor + 1 else cursor
-		apply(out, newCursor)
+		// El nuevo bloque vacío es el próximo hueco que debe rellenar «Siguiente».
+		apply(out, insertAt)
 		selected = insertAt
 	}
 
@@ -385,17 +374,26 @@ fun TapScreen(song: Song, onBack: () -> Unit, onSave: (Song) -> Unit, onSaveStay
 	fun selectForInsertion(i: Int) {
 		val event = events.getOrNull(i) ?: return
 		selected = i
-		// Seleccionar un acorde sirve como referencia; el siguiente por marcar es el que viene después.
+		val ordinal = events.take(i + 1).count { it.pos >= 0 } - 1
+		val expected = sourceEvents.getOrNull(ordinal)
+		val exact = if (event.pos >= 0 && expected != null && expected.pos == event.pos && expected.chord == event.chord) ordinal else -1
+		if (exact >= 0) {
+			// El cursor temporal queda después de lo seleccionado y la secuencia apunta al acorde siguiente.
+			cursor = (i + 1).coerceAtMost(events.size)
+			sourceCursor = exact + 1
+			return
+		}
+
+		// Un acorde personalizado o vacío toma como referencia secuencial el acorde
+		// secuencial más cercano que aparece antes en la línea temporal.
+		val previousSequence = (i - 1 downTo 0).firstOrNull { events[it].pos >= 0 }
+		val previousSource = previousSequence?.let { previous ->
+			sourceEvents.indexOfFirst { it.line == events[previous].line && it.pos == events[previous].pos }
+		} ?: -1
+		sourceCursor = if (previousSource >= 0) previousSource + 1 else {
+			sourceEvents.indexOfFirst { it.line >= event.line }.let { if (it >= 0) it else sourceEvents.size }
+		}
 		cursor = (i + 1).coerceAtMost(events.size)
-		val exact = sourceEvents.indexOfFirst { it.line == event.line && it.pos == event.pos && event.pos >= 0 }
-		val nextInLine = sourceEvents.indexOfFirst {
-			it.line > event.line || (it.line == event.line && it.pos >= event.pos.coerceAtLeast(0))
-		}
-		sourceCursor = when {
-			exact >= 0 -> exact + 1
-			nextInLine >= 0 -> nextInLine
-			else -> sourceEvents.size
-		}
 	}
 
 	fun playFrom(i: Int) {
