@@ -2,6 +2,7 @@ package eus.kompaser.ui
 
 import android.view.HapticFeedbackConstants
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -16,16 +17,21 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.PlaylistAddCheck
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
@@ -59,6 +65,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -101,6 +108,38 @@ private fun compactEmptyRows(events: List<ChordEvent>, beatsPerBar: Int, offset:
 	return compacted
 }
 
+private fun fmtTimelineSecond(seconds: Double) = "%.3f".format(seconds).replace(',', '.').trimEnd('0').trimEnd('.')
+
+private fun fmtTimelineTime(seconds: Double): String {
+	val wholeSeconds = seconds.coerceAtLeast(0.0).toInt()
+	return "%d:%02d".format(wholeSeconds / 60, wholeSeconds % 60)
+}
+
+@Composable
+private fun CompactDecimalField(value: String, onValueChange: (String) -> Unit, label: String, modifier: Modifier = Modifier) {
+	val shape = RoundedCornerShape(8.dp)
+	Column(modifier) {
+		Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+		BasicTextField(
+			value = value,
+			onValueChange = onValueChange,
+			singleLine = true,
+			keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+			textStyle = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface),
+			modifier = Modifier.fillMaxWidth().height(34.dp).clip(shape)
+				.background(MaterialTheme.colorScheme.surface)
+				.border(1.dp, MaterialTheme.colorScheme.outlineVariant, shape)
+				.padding(horizontal = 10.dp, vertical = 7.dp),
+			decorationBox = { innerTextField ->
+				Box(contentAlignment = Alignment.CenterStart) {
+					if (value.isEmpty()) Text("—", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+					innerTextField()
+				}
+			},
+		)
+	}
+}
+
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun TapScreen(song: Song, onBack: () -> Unit, onSave: (Song) -> Unit, onSaveStay: (Song) -> Unit = onSave) {
@@ -109,8 +148,11 @@ fun TapScreen(song: Song, onBack: () -> Unit, onSave: (Song) -> Unit, onSaveStay
 		LaunchedEffect(Unit) { onBack() }
 		return
 	}
-	val secondsPerBeat = 60.0 / song.bpm.coerceAtLeast(1f)
-	val offset = song.videoOffsetMs / 1000.0
+	var bpmText by remember(song.id) { mutableStateOf(song.bpm.toString()) }
+	var firstPulseText by remember(song.id) { mutableStateOf(fmtTimelineSecond(song.videoOffsetMs / 1000.0)) }
+	val bpm = bpmText.trim().replace(',', '.').toFloatOrNull()?.takeIf { it.isFinite() }?.coerceIn(30f, 260f) ?: song.bpm
+	val offset = firstPulseText.trim().replace(',', '.').toDoubleOrNull()?.takeIf { it.isFinite() } ?: song.videoOffsetMs / 1000.0
+	val secondsPerBeat = 60.0 / bpm.coerceAtLeast(1f)
 	val sourceEvents = remember(song.id, song.content) { ChordSheet.defaultEvents(song.lines, song.beatsPerBar.toFloat()) }
 	val sourceLineStartPositions = remember(song.id, song.content) {
 		sourceEvents.groupBy { it.line }.values.mapNotNull { lineEvents ->
@@ -154,7 +196,15 @@ fun TapScreen(song: Song, onBack: () -> Unit, onSave: (Song) -> Unit, onSaveStay
 		onDispose { view.keepScreenOn = false }
 	}
 
-	fun currentSong() = song.copy(events = events, updatedAt = System.currentTimeMillis())
+	fun currentSong() = song.copy(
+		bpm = bpm,
+		videoOffsetMs = (offset * 1000.0).toLong(),
+		events = events.map { event ->
+			val start = event.startBeat ?: 0f
+			event.copy(t = offset + start * secondsPerBeat)
+		},
+		updatedAt = System.currentTimeMillis(),
+	)
 	fun persistTimeline() {
 		onSaveStay(currentSong())
 		changed = false
@@ -393,6 +443,14 @@ fun TapScreen(song: Song, onBack: () -> Unit, onSave: (Song) -> Unit, onSaveStay
 			verticalArrangement = Arrangement.spacedBy(10.dp),
 		) {
 			YouTubeBox(videoId, video, Modifier.fillMaxWidth().aspectRatio(16f / 9f))
+			Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+				CompactDecimalField(
+					bpmText, { bpmText = it; changed = true }, "BPM", Modifier.weight(0.75f),
+				)
+				CompactDecimalField(
+					firstPulseText, { firstPulseText = it; changed = true }, "Inicio pulso (s)", Modifier.weight(1.25f),
+				)
+			}
 			LazyColumn(
 				Modifier.fillMaxWidth().weight(1f),
 				state = timelineListState,
@@ -419,9 +477,9 @@ fun TapScreen(song: Song, onBack: () -> Unit, onSave: (Song) -> Unit, onSaveStay
 						rowStart = rowStart,
 						beatsPerBar = song.beatsPerBar,
 					selected = selectedEventIndex.takeIf { it in events.indices },
-					createdEventIndex = latestCreatedEventIndex.takeIf { it in events.indices },
-					creationToken = creationToken,
-						timeLabel = null,
+						createdEventIndex = latestCreatedEventIndex.takeIf { it in events.indices },
+						creationToken = creationToken,
+						timeLabel = fmtTimelineTime(offset + rowStart * secondsPerBeat),
 						onSelect = { index -> selectedEventIndex = if (selectedEventIndex == index) -1 else index },
 						onMove = { _, _ -> },
 						onInsert = { _, _, _ -> },
@@ -432,36 +490,60 @@ fun TapScreen(song: Song, onBack: () -> Unit, onSave: (Song) -> Unit, onSaveStay
 							selectedEventIndex = index
 							editingEventIndex = index
 						},
+						onBlockDoubleTap = { index ->
+							val event = events.getOrNull(index)
+							if (event != null) {
+								val beat = event.startBeat ?: song.starts.getOrNull(index)?.toFloat() ?: 0f
+								video.player?.seekTo((offset + beat * secondsPerBeat).coerceAtLeast(0.0).toFloat())
+								video.player?.play()
+							}
+						},
 						fixedGrid = true,
 					)
 				}
 			}
 			Row(
-				Modifier.fillMaxWidth().height(112.dp),
+				Modifier.fillMaxWidth().height(72.dp),
 				horizontalArrangement = Arrangement.spacedBy(8.dp),
 			) {
 				Box(
-					Modifier.weight(1.35f).fillMaxHeight().clip(RoundedCornerShape(24.dp))
+					Modifier.weight(1.2f).fillMaxHeight().clip(RoundedCornerShape(18.dp))
 						.background(Brush.linearGradient(listOf(Fun.Turquoise, Color(0xFF3DD9C1))))
 						.clickable { addNextChord() },
 					contentAlignment = Alignment.Center,
 				) {
 					Column(horizontalAlignment = Alignment.CenterHorizontally) {
-						Text("AÑADIR · 1 TIEMPO", color = Color.White.copy(alpha = 0.85f), fontWeight = FontWeight.Bold, fontSize = 12.sp)
-						Text(nextChord, color = Color.White, fontWeight = FontWeight.Black, fontSize = 38.sp, maxLines = 1)
-						Text("Secuencia", color = Color.White.copy(alpha = 0.8f), fontSize = 12.sp)
+						Text("SIGUIENTE", color = Color.White.copy(alpha = 0.85f), fontWeight = FontWeight.Bold, fontSize = 9.sp)
+						Text(nextChord, color = Color.White, fontWeight = FontWeight.Black, fontSize = 25.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+						Text("1 tiempo", color = Color.White.copy(alpha = 0.8f), fontSize = 9.sp)
 					}
 				}
 				Box(
-					Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(24.dp))
+					Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(18.dp))
 						.background(Brush.linearGradient(listOf(Fun.Purple, Fun.Pink)))
 						.clickable { addEmptyTempo() },
 					contentAlignment = Alignment.Center,
 				) {
 					Column(horizontalAlignment = Alignment.CenterHorizontally) {
-						Text("AÑADIR VACÍO", color = Color.White.copy(alpha = 0.85f), fontWeight = FontWeight.Bold, fontSize = 12.sp)
-						Text("+", color = Color.White, fontWeight = FontWeight.Black, fontSize = 42.sp)
-						Text("1 tiempo", color = Color.White.copy(alpha = 0.85f), fontSize = 12.sp)
+						Text("VACÍO", color = Color.White.copy(alpha = 0.85f), fontWeight = FontWeight.Bold, fontSize = 9.sp)
+						Text("+", color = Color.White, fontWeight = FontWeight.Black, fontSize = 27.sp)
+						Text("1 tiempo", color = Color.White.copy(alpha = 0.85f), fontSize = 9.sp)
+					}
+				}
+				Box(
+					Modifier.weight(0.78f).fillMaxHeight().clip(RoundedCornerShape(18.dp))
+						.background(Brush.linearGradient(listOf(Fun.Coral, Fun.Pink)))
+						.clickable { if (video.playing) video.player?.pause() else video.player?.play() },
+					contentAlignment = Alignment.Center,
+				) {
+					Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(2.dp)) {
+						Icon(
+							if (video.playing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+							contentDescription = if (video.playing) "Pausar vídeo" else "Reproducir vídeo",
+							modifier = Modifier.size(24.dp),
+							tint = Color.White,
+						)
+						Text(if (video.playing) "PAUSA" else "PLAY", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 9.sp)
 					}
 				}
 			}

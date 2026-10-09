@@ -131,7 +131,7 @@ class MainActivity : ComponentActivity() {
 						)
 					} ?: LaunchedEffect(s) { screen = Screen.List }
 					is Screen.Edit -> songs.firstOrNull { it.id == s.id }?.let { song ->
-						EditScreen(song, onBack = { screen = s.back }, onTap = { screen = Screen.Tap(song.id, s) }, onSave = {
+						EditScreen(song, onBack = { screen = s.back }, onSave = {
 							save(it)
 							screen = s.back
 						})
