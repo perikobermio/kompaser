@@ -301,7 +301,7 @@ fun PlayerScreen(
 					if (song.youtubeId != null) IconButton(onClick = {
 						pause()
 						onTap()
-					}) { Icon(Icons.Filled.TouchApp, "Marcar tiempos") }
+					}) { Icon(Icons.Filled.TouchApp, "Abrir Timeline") }
 					IconButton(onClick = {
 						pause()
 						onEdit()
@@ -772,7 +772,7 @@ private fun TimelinePlayer(
 			val row = rows[r]
 			val li = row.lineIndex
 			val blocks = row.blocks
-			val line = li?.let { song.lines.getOrNull(it) } ?: SongLine(null, "", emptyList())
+			val line = row.displayLine ?: li?.let { song.lines.getOrNull(it) } ?: SongLine(null, "", emptyList())
 			val first = blocks.firstOrNull()?.index
 			val fixedGrid = events.isNotEmpty() && events.all { it.startBeat != null }
 			val rowStart = if (fixedGrid) r * song.beatsPerBar.toDouble() else first?.let { starts[it] } ?: 0.0

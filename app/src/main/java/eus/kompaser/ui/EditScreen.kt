@@ -183,7 +183,7 @@ fun EditScreen(song: Song, onBack: () -> Unit, onTap: () -> Unit, onSave: (Song)
 					) {
 						Icon(Icons.Filled.TouchApp, null)
 						Spacer(Modifier.width(8.dp))
-						Text(if (youtubeId(yt) != null) "Marcar tiempos escuchando el vídeo" else "Marcar tiempos (pon antes un vídeo)")
+						Text(if (youtubeId(yt) != null) "Abrir Timeline escuchando el vídeo" else "Timeline (pon antes un vídeo)")
 					}
 					Text("Línea de tiempo", style = MaterialTheme.typography.titleMedium)
 					Text(
@@ -202,7 +202,7 @@ fun EditScreen(song: Song, onBack: () -> Unit, onTap: () -> Unit, onSave: (Song)
 				}
 			}
 		itemsIndexed(timelineRows) { rowIndex, row ->
-				val line = row.lineIndex?.let { song.lines[it] } ?: SongLine(null, "", emptyList())
+				val line = row.displayLine ?: row.lineIndex?.let { song.lines[it] } ?: SongLine(null, "", emptyList())
 				val blocks = row.blocks
 				val first = blocks.firstOrNull()?.index
 				val t = first?.let { events[it].t }

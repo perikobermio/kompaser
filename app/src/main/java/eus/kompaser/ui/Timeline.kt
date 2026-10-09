@@ -84,7 +84,18 @@ private data class TimelineBlockPart(
 internal data class TimelineDisplayRow(
 	val lineIndex: Int?,
 	val blocks: List<IndexedValue<ChordEvent>>,
+	val displayLine: SongLine? = null,
 )
+
+private fun lyricLineForSource(lines: List<SongLine>, sourceIndex: Int): Int? {
+	if (lines.getOrNull(sourceIndex)?.lyric?.isNotBlank() == true) return sourceIndex
+	for (index in sourceIndex + 1 until lines.size) {
+		val candidate = lines[index]
+		if (candidate.section != null || candidate.chords.isNotEmpty()) return null
+		if (candidate.lyric.isNotBlank()) return index
+	}
+	return null
+}
 
 /** Builds lyric rows in sequence, with rests on standalone rows at their actual positions. */
 internal fun timelineDisplayRows(lines: List<SongLine>, events: List<ChordEvent>, beatsPerBar: Int? = null): List<TimelineDisplayRow> {
@@ -94,10 +105,23 @@ internal fun timelineDisplayRows(lines: List<SongLine>, events: List<ChordEvent>
 		return (0 until count).map { li ->
 			val start = li * bar
 			val end = start + bar
-			TimelineDisplayRow(li.takeIf { it < lines.size }, events.withIndex().filter { (_, event) ->
+			val rowEvents = events.withIndex().filter { (_, event) ->
 				val eventStart = event.startBeat!!
 				eventStart < end && eventStart + event.beats > start
-			})
+			}
+			val sourceEvent = rowEvents.asSequence()
+				.filter { (_, event) ->
+					!event.isRest && event.sourceLine?.let { it in lines.indices } == true && event.startBeat!! >= start && event.startBeat < end
+				}
+				.minByOrNull { it.value.startBeat!! }
+			val sourceLine = sourceEvent?.value?.sourceLine?.takeIf { it in lines.indices }
+			val displayLine = sourceLine?.let { sourceIndex ->
+				val source = lines[sourceIndex]
+				val lyricIndex = lyricLineForSource(lines, sourceIndex)
+				source.copy(lyric = lyricIndex?.let { lines[it].lyric }.orEmpty())
+			}
+			val lineIndex = sourceLine ?: li.takeIf { it < lines.size }
+			TimelineDisplayRow(lineIndex, rowEvents, displayLine)
 		}
 	}
 	val byLine = events.withIndex().groupBy { it.value.line }

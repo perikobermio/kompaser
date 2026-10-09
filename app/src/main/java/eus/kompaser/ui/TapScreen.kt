@@ -22,6 +22,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.PlaylistAddCheck
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Description
@@ -36,6 +37,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -46,6 +49,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -65,6 +69,37 @@ import eus.kompaser.model.ChordSheet
 import eus.kompaser.model.Song
 import eus.kompaser.model.SongLine
 import kotlin.math.ceil
+import kotlinx.coroutines.launch
+
+private fun compactEmptyRows(events: List<ChordEvent>, beatsPerBar: Int, offset: Double, secondsPerBeat: Double): List<ChordEvent> {
+	if (events.isEmpty()) return events
+	val bar = beatsPerBar.coerceAtLeast(1).toFloat()
+	var compacted = events.sortedBy { it.startBeat ?: 0f }
+	var measure = 0
+	while (true) {
+		val rowStart = measure * bar
+		val rowEnd = rowStart + bar
+		val hasEvent = compacted.any { event ->
+			val start = event.startBeat ?: 0f
+			start < rowEnd - 1e-3f && start + event.beats > rowStart + 1e-3f
+		}
+		if (!hasEvent) {
+			if (compacted.none { (it.startBeat ?: 0f) >= rowEnd - 1e-3f }) break
+			compacted = compacted.map { event ->
+				val start = event.startBeat ?: 0f
+				if (start >= rowEnd - 1e-3f) {
+					val shifted = (start - bar).coerceAtLeast(0f)
+					event.copy(
+						line = (shifted / bar).toInt(),
+						startBeat = shifted,
+						t = offset + shifted * secondsPerBeat,
+					)
+				} else event
+			}
+		} else measure++
+	}
+	return compacted
+}
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
@@ -84,14 +119,15 @@ fun TapScreen(song: Song, onBack: () -> Unit, onSave: (Song) -> Unit, onSaveStay
 	}
 	var events by remember(song.id) {
 		val starts = song.starts
-		mutableStateOf(song.events.mapIndexed { index, event ->
+		val loaded = song.events.mapIndexed { index, event ->
 			val start = event.startBeat ?: starts[index].toFloat()
 			event.copy(
 				line = (start / song.beatsPerBar.coerceAtLeast(1)).toInt(),
 				startBeat = start,
 				t = event.t ?: offset + start * secondsPerBeat,
 			)
-		})
+		}
+		mutableStateOf(compactEmptyRows(loaded, song.beatsPerBar, offset, secondsPerBeat))
 	}
 	var sourceCursor by remember(song.id) {
 		mutableIntStateOf(
@@ -109,6 +145,8 @@ fun TapScreen(song: Song, onBack: () -> Unit, onSave: (Song) -> Unit, onSaveStay
 	var latestCreatedEventIndex by remember { mutableIntStateOf(-1) }
 	var creationToken by remember { mutableIntStateOf(0) }
 	val timelineListState = rememberLazyListState()
+	val snackbarHostState = remember { SnackbarHostState() }
+	val coroutineScope = rememberCoroutineScope()
 	val video = remember { VideoSync() }
 	val view = LocalView.current
 	DisposableEffect(Unit) {
@@ -117,9 +155,13 @@ fun TapScreen(song: Song, onBack: () -> Unit, onSave: (Song) -> Unit, onSaveStay
 	}
 
 	fun currentSong() = song.copy(events = events, updatedAt = System.currentTimeMillis())
-	fun saveAndStay() {
+	fun persistTimeline() {
 		onSaveStay(currentSong())
 		changed = false
+	}
+	fun saveAndStay() {
+		persistTimeline()
+		coroutineScope.launch { snackbarHostState.showSnackbar("Timeline guardado") }
 	}
 	fun positioned(event: ChordEvent, startBeat: Float, beats: Float = event.beats) = event.copy(
 		beats = beats,
@@ -134,14 +176,12 @@ fun TapScreen(song: Song, onBack: () -> Unit, onSave: (Song) -> Unit, onSaveStay
 		val sourceLine = event.sourceLine?.takeIf { it >= 0 } ?: event.line
 		return event.sectionStart || isVerseStart(sourceLine, event.pos)
 	}
-	fun verseAnchorStart(event: ChordEvent, previousEnd: Float, proposedStart: Float): Float {
-		if (!isVerseStartEvent(event)) return maxOf(proposedStart, previousEnd)
-		val oldStart = event.startBeat ?: proposedStart
-		if (oldStart >= previousEnd - 1e-3f) return oldStart
+	fun nextEventStart(event: ChordEvent, previousEnd: Float): Float {
+		if (!isVerseStartEvent(event)) return previousEnd
 		val bar = song.beatsPerBar.coerceAtLeast(1).toFloat()
 		return (kotlin.math.ceil((previousEnd - 1e-3f) / bar).toInt() * bar).coerceAtLeast(previousEnd)
 	}
-	fun insertAt(event: ChordEvent, insertionIndex: Int, startBeat: Float, shiftFollowingBy: Float = event.beats): Int {
+	fun insertAt(event: ChordEvent, insertionIndex: Int, startBeat: Float): Int {
 		val inserted = event.copy(
 			line = (startBeat / song.beatsPerBar.coerceAtLeast(1)).toInt(),
 			startBeat = startBeat,
@@ -150,30 +190,16 @@ fun TapScreen(song: Song, onBack: () -> Unit, onSave: (Song) -> Unit, onSaveStay
 		val out = events.take(insertionIndex).toMutableList()
 		out += inserted
 		var previousEnd = startBeat + inserted.beats
-		var pendingShift = shiftFollowingBy
 		for (following in events.drop(insertionIndex)) {
-			if (following.isRest) {
-				val restBeats = following.beats - pendingShift
-				if (restBeats <= 1e-3f) {
-					pendingShift -= following.beats
-				} else {
-					out += positioned(following, previousEnd, restBeats)
-					previousEnd += restBeats
-					pendingShift = 0f
-				}
-			} else {
-				val oldStart = following.startBeat ?: 0f
-				val proposedStart = oldStart + pendingShift
-				val start = verseAnchorStart(following, previousEnd, proposedStart)
-				if (isVerseStartEvent(following)) pendingShift = start - oldStart
-				out += positioned(following, start)
-				previousEnd = start + following.beats
-			}
+			val start = nextEventStart(following, previousEnd)
+			out += positioned(following, start)
+			previousEnd = start + following.beats
 		}
-		events = out
+		events = compactEmptyRows(out, song.beatsPerBar, offset, secondsPerBeat)
 		latestCreatedEventIndex = insertionIndex
 		creationToken++
-		jumpToMeasure = (startBeat / song.beatsPerBar.coerceAtLeast(1)).toInt()
+		val createdStart = events.getOrNull(insertionIndex)?.startBeat ?: startBeat
+		jumpToMeasure = (createdStart / song.beatsPerBar.coerceAtLeast(1)).toInt()
 		changed = true
 		view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
 		return insertionIndex
@@ -202,29 +228,15 @@ fun TapScreen(song: Song, onBack: () -> Unit, onSave: (Song) -> Unit, onSaveStay
 			val previous = out[index - 1]
 			(previous.startBeat ?: 0f) + previous.beats
 		} else 0f
-		var pendingShift = if (keepCustomVerseAnchor) placeholderBeats - removed.beats else -removed.beats
 		var followingIndex = if (keepCustomVerseAnchor) index + 1 else index
 		while (followingIndex < out.size) {
 			val following = out[followingIndex]
-			if (following.isRest) {
-				val restBeats = following.beats - pendingShift
-				out[followingIndex] = positioned(following, previousEnd, restBeats)
-				previousEnd += restBeats
-				pendingShift = 0f
-			} else {
-				val oldStart = following.startBeat ?: 0f
-				var start = maxOf(oldStart + pendingShift, previousEnd)
-				if (isVerseStartEvent(following)) {
-					val bar = song.beatsPerBar.coerceAtLeast(1).toFloat()
-					start = (kotlin.math.ceil((previousEnd - 1e-3f) / bar).toInt() * bar).coerceAtLeast(previousEnd)
-					pendingShift = start - oldStart
-				}
-				out[followingIndex] = positioned(following, start)
-				previousEnd = start + following.beats
-			}
+			val start = nextEventStart(following, previousEnd)
+			out[followingIndex] = positioned(following, start)
+			previousEnd = start + following.beats
 			followingIndex++
 		}
-		events = out
+		events = compactEmptyRows(out, song.beatsPerBar, offset, secondsPerBeat)
 		selectedEventIndex = -1
 		if (!keepCustomVerseAnchor && latestCreatedEventIndex > index) latestCreatedEventIndex--
 		if (removed.sourceLine != null && removed.sourceLine >= 0 && removed.pos >= 0) {
@@ -250,59 +262,78 @@ fun TapScreen(song: Song, onBack: () -> Unit, onSave: (Song) -> Unit, onSaveStay
 	}
 	fun addNextChord() {
 		val source = sourceEvents.getOrNull(sourceCursor) ?: return
-		var insertionIndex = selectedEventIndex.takeIf { it in events.indices }?.plus(1) ?: events.size
+		val insertionIndex = selectedEventIndex.takeIf { it in events.indices }?.plus(1) ?: events.size
 		var startBeat = selectedEventIndex.takeIf { it in events.indices }?.let { (events[it].startBeat ?: 0f) + events[it].beats }
 			?: (events.maxOfOrNull { (it.startBeat ?: 0f) + it.beats } ?: 0f)
 		val startsVerse = isVerseStart(source.line, source.pos)
-		var shiftFollowingBy = 1f
 		if (startsVerse) {
 			val bar = song.beatsPerBar.coerceAtLeast(1).toFloat()
 			val remainder = startBeat % bar
 			val gap = if (remainder < 1e-3f || bar - remainder < 1e-3f) 0f else bar - remainder
 			startBeat += gap
-			shiftFollowingBy += gap
 		}
 		insertAt(source.copy(
 			beats = 1f,
 			manual = true,
 			sourceLine = source.line,
 			sectionStart = startsVerse,
-		), insertionIndex, startBeat, shiftFollowingBy)
+		), insertionIndex, startBeat)
 		advanceSourceCursor(sourceCursor + 1)
+	}
+	fun autoFillTimeline() {
+		if (sourceCursor >= sourceEvents.size) return
+		val out = events.toMutableList()
+		var previousEnd = out.maxOfOrNull { (it.startBeat ?: 0f) + it.beats } ?: 0f
+		var added = false
+		for (sourceIndex in sourceCursor until sourceEvents.size) {
+			val source = sourceEvents[sourceIndex]
+			val alreadyPresent = out.any {
+				it.manual && !it.isRest && (it.sourceLine ?: it.line) == source.line && it.pos == source.pos
+			}
+			if (alreadyPresent) continue
+			val startsVerse = isVerseStart(source.line, source.pos)
+			var startBeat = previousEnd
+			if (startsVerse) {
+				val bar = song.beatsPerBar.coerceAtLeast(1).toFloat()
+				startBeat = (ceil((startBeat - 1e-3f) / bar).toInt() * bar).coerceAtLeast(startBeat)
+			}
+			out += positioned(source.copy(
+				beats = 1f,
+				manual = true,
+				sourceLine = source.line,
+				sectionStart = startsVerse,
+			), startBeat)
+			previousEnd = startBeat + 1f
+			added = true
+		}
+		if (!added) {
+			sourceCursor = sourceEvents.size
+			return
+		}
+		events = compactEmptyRows(out, song.beatsPerBar, offset, secondsPerBeat)
+		sourceCursor = sourceEvents.indexOfFirst { source ->
+			events.none { it.manual && !it.isRest && (it.sourceLine ?: it.line) == source.line && it.pos == source.pos }
+		}.let { if (it < 0) sourceEvents.size else it }
+		selectedEventIndex = -1
+		latestCreatedEventIndex = -1
+		changed = true
+		view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
 	}
 	fun setChordDuration(index: Int, duration: Float) {
 		val current = events.getOrNull(index) ?: return
-		val delta = duration - current.beats
 		val out = events.toMutableList()
 		out[index] = current.copy(beats = duration)
 		val ordered = out.indices.sortedBy { out[it].startBeat ?: 0f }
 		val currentPosition = ordered.indexOf(index)
 		var previousEnd = (current.startBeat ?: 0f) + duration
-		var pendingShift = delta
-		val removed = mutableListOf<Int>()
 		for (position in currentPosition + 1 until ordered.size) {
 			val followingIndex = ordered[position]
 			val following = out[followingIndex]
-			if (following.isRest) {
-				val restBeats = following.beats - pendingShift
-				if (restBeats <= 1e-3f) {
-					removed += followingIndex
-					pendingShift -= following.beats
-				} else {
-					out[followingIndex] = positioned(following, previousEnd, restBeats)
-					previousEnd += restBeats
-					pendingShift = 0f
-				}
-			} else {
-				val shiftedStart = (following.startBeat ?: 0f) + pendingShift
-				val start = verseAnchorStart(following, previousEnd, shiftedStart)
-				if (isVerseStartEvent(following)) pendingShift = start - (following.startBeat ?: 0f)
-				out[followingIndex] = positioned(following, start)
-				previousEnd = start + following.beats
-			}
+			val start = nextEventStart(following, previousEnd)
+			out[followingIndex] = positioned(following, start)
+			previousEnd = start + following.beats
 		}
-		for (removedIndex in removed.sortedDescending()) out.removeAt(removedIndex)
-		events = out
+		events = compactEmptyRows(out, song.beatsPerBar, offset, secondsPerBeat)
 		changed = true
 		view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
 	}
@@ -319,11 +350,12 @@ fun TapScreen(song: Song, onBack: () -> Unit, onSave: (Song) -> Unit, onSaveStay
 		}
 	}
 	Scaffold(
+		snackbarHost = { SnackbarHost(snackbarHostState) },
 		topBar = {
 			TopAppBar(
 				title = {
 					Column {
-						Text("Marcar tiempos")
+						Text("Timeline")
 						Text(song.title, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
 					}
 				},
@@ -332,11 +364,14 @@ fun TapScreen(song: Song, onBack: () -> Unit, onSave: (Song) -> Unit, onSaveStay
 						Icon(Icons.Filled.Close, contentDescription = "Salir")
 					}
 				},
-				actions = {
-					IconButton(onClick = { showFullScore = true }) {
-						Icon(Icons.Filled.Description, contentDescription = "Ver partitura")
-					}
-					IconButton(onClick = ::saveAndStay) {
+					actions = {
+						IconButton(onClick = { showFullScore = true }) {
+							Icon(Icons.Filled.Description, contentDescription = "Ver partitura")
+						}
+						IconButton(onClick = ::autoFillTimeline, enabled = sourceCursor < sourceEvents.size) {
+							Icon(Icons.AutoMirrored.Filled.PlaylistAddCheck, contentDescription = "Autorrellenar timeline")
+						}
+						IconButton(onClick = ::saveAndStay) {
 						Icon(Icons.Filled.Check, contentDescription = "Guardar línea de tiempo")
 					}
 				IconButton(onClick = {
@@ -541,7 +576,14 @@ fun TapScreen(song: Song, onBack: () -> Unit, onSave: (Song) -> Unit, onSaveStay
 		title = { Text("¿Guardar la línea de tiempo?") },
 		text = { Text("Puedes guardar los cambios antes de salir.") },
 		confirmButton = {
-			TextButton(onClick = { confirmExit = false; saveAndStay(); onBack() }) { Text("Guardar") }
+		TextButton(onClick = {
+			confirmExit = false
+			persistTimeline()
+			coroutineScope.launch {
+				snackbarHostState.showSnackbar("Timeline guardado")
+				onBack()
+			}
+		}) { Text("Guardar") }
 		},
 		dismissButton = { TextButton(onClick = { confirmExit = false; onBack() }) { Text("Salir sin guardar") } },
 	)
