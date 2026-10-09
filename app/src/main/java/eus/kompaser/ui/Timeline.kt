@@ -1,9 +1,13 @@
 package eus.kompaser.ui
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -37,6 +41,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -82,7 +87,19 @@ internal data class TimelineDisplayRow(
 )
 
 /** Builds lyric rows in sequence, with rests on standalone rows at their actual positions. */
-internal fun timelineDisplayRows(lines: List<SongLine>, events: List<ChordEvent>): List<TimelineDisplayRow> {
+internal fun timelineDisplayRows(lines: List<SongLine>, events: List<ChordEvent>, beatsPerBar: Int? = null): List<TimelineDisplayRow> {
+	if (events.isNotEmpty() && events.all { it.startBeat != null } && beatsPerBar != null) {
+		val bar = beatsPerBar.toFloat()
+		val count = maxOf(lines.size, events.maxOf { ((it.startBeat!! + it.beats - 1e-4f) / bar).toInt() + 1 })
+		return (0 until count).map { li ->
+			val start = li * bar
+			val end = start + bar
+			TimelineDisplayRow(li.takeIf { it < lines.size }, events.withIndex().filter { (_, event) ->
+				val eventStart = event.startBeat!!
+				eventStart < end && eventStart + event.beats > start
+			})
+		}
+	}
 	val byLine = events.withIndex().groupBy { it.value.line }
 	val rows = mutableListOf<TimelineDisplayRow>()
 	fun appendInSequence(lineIndex: Int?, lineEvents: List<IndexedValue<ChordEvent>>, showEmptyLine: Boolean) {
@@ -115,16 +132,45 @@ object Timeline {
 	const val FINE = 1f / 16
 
 	/** Mueve el inicio del acorde [i] [d] pulsos (negativo = antes). */
-	fun moveStart(evs: List<ChordEvent>, i: Int, d: Float, secPerBeat: Double): List<ChordEvent> {
+	fun moveStart(evs: List<ChordEvent>, i: Int, d: Float, secPerBeat: Double, beatsPerBar: Int? = null): List<ChordEvent> {
 		val cur = evs.getOrNull(i) ?: return evs
 		if (cur.beats - d < MIN) return evs
 		val out = evs.toMutableList()
+		if (cur.startBeat != null) {
+			if (i > 0) {
+				val prev = out[i - 1]
+				if (prev.beats + d < MIN) return evs
+				out[i - 1] = prev.copy(beats = prev.beats + d)
+			}
+			val start = cur.startBeat + d
+			if (start < 0f) return evs
+			out[i] = cur.copy(
+				beats = cur.beats - d,
+				t = cur.t?.let { it + d * secPerBeat },
+				startBeat = start,
+				line = beatsPerBar?.let { (start / it).toInt() } ?: cur.line,
+			)
+			var end = start + out[i].beats
+			for (k in i + 1 until out.size) {
+				val event = out[k]
+				val eventStart = maxOf(event.startBeat ?: end, end)
+				val line = beatsPerBar?.let { (eventStart / it).toInt() } ?: event.line
+				out[k] = event.copy(line = line, startBeat = eventStart, t = event.t?.let { it + (eventStart - (event.startBeat ?: eventStart)) * secPerBeat })
+				end = eventStart + event.beats
+			}
+			return out
+		}
 		if (i > 0) {
 			val prev = evs[i - 1]
 			if (prev.beats + d < MIN) return evs
 			out[i - 1] = prev.copy(beats = prev.beats + d)
 		}
-		out[i] = cur.copy(beats = cur.beats - d, t = cur.t?.let { it + d * secPerBeat })
+		out[i] = cur.copy(
+			beats = cur.beats - d,
+			t = cur.t?.let { it + d * secPerBeat },
+			startBeat = cur.startBeat?.plus(d),
+			line = cur.startBeat?.let { start -> beatsPerBar?.let { (start + d).div(it).toInt() } } ?: cur.line,
+		)
 		return out
 	}
 
@@ -134,7 +180,12 @@ object Timeline {
 		val out = evs.toMutableList()
 		val cur = out.removeAt(i)
 		if (i > 0) out[i - 1] = out[i - 1].copy(beats = out[i - 1].beats + cur.beats)
-		else out[0] = out[0].copy(beats = out[0].beats + cur.beats, t = cur.t ?: out[0].t)
+		else out[0] = out[0].copy(
+			beats = out[0].beats + cur.beats,
+			t = cur.t ?: out[0].t,
+			startBeat = cur.startBeat ?: out[0].startBeat,
+			line = cur.line,
+		)
 		return out
 	}
 
@@ -168,7 +219,10 @@ object Timeline {
 		if (cur.beats < 2 * MIN) return evs
 		val out = evs.toMutableList()
 		out[i] = cur.copy(beats = a)
-		out.add(i + 1, ChordEvent(chord, cur.beats - a, cur.line, -1, cur.t?.let { it + a * secPerBeat }))
+		out.add(i + 1, ChordEvent(
+			chord, cur.beats - a, cur.line, -1, cur.t?.let { it + a * secPerBeat },
+			startBeat = cur.startBeat?.plus(a), sourceLine = cur.sourceLine,
+		))
 		return out
 	}
 }
@@ -220,10 +274,30 @@ fun TimelineRow(
 	longPressEnabled: Boolean = true,
 	modifier: Modifier = Modifier,
 	onBlockDoubleTap: ((Int) -> Unit)? = null,
+	createdEventIndex: Int? = null,
+	creationToken: Int = 0,
+	fixedGrid: Boolean = false,
+	rowSelected: Boolean = false,
+	onSelectRow: (() -> Unit)? = null,
+	onSelectGrid: (() -> Unit)? = null,
+	onMoveAcross: ((Int, Float, Int) -> Unit)? = null,
 ) {
-	Column(modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+	val rowShape = RoundedCornerShape(8.dp)
+	Column(
+		modifier.fillMaxWidth().padding(vertical = 3.dp).clip(rowShape)
+			.background(if (rowSelected) Fun.Coral.copy(alpha = 0.10f) else Color.Transparent)
+			.then(if (rowSelected) Modifier.border(2.dp, Fun.Coral, rowShape) else Modifier),
+	) {
+		if (rowSelected) Text(
+			"DESTINO · SIGUIENTE ACORDE AL FINAL DE ESTA FILA",
+			Modifier.fillMaxWidth().background(Fun.Coral.copy(alpha = 0.16f)).padding(horizontal = 8.dp, vertical = 3.dp),
+			color = Fun.Coral, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelSmall,
+		)
 		line.section?.let { Text(it, color = Fun.Purple, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelLarge) }
-		Row(verticalAlignment = Alignment.CenterVertically) {
+		Row(
+			Modifier.fillMaxWidth().then(if (onSelectRow != null) Modifier.clickable { onSelectRow() } else Modifier),
+			verticalAlignment = Alignment.CenterVertically,
+		) {
 			if (timeLabel != null) Text(
 				"$timeLabel  ", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
 			)
@@ -232,21 +306,21 @@ fun TimelineRow(
 				Text(line.lyric, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall, maxLines = 1)
 			}
 		}
-		if (blocks.isEmpty()) return@Column
-		val rowBeats = blocks.sumOf { it.value.beats.toDouble() }.toFloat()
+		if (blocks.isEmpty() && !fixedGrid) return@Column
+		val rowBeats = if (fixedGrid) beatsPerBar.toFloat() else blocks.sumOf { it.value.beats.toDouble() }.toFloat()
 		BoxWithConstraints(Modifier.fillMaxWidth().padding(top = 2.dp)) {
-			// Cada fila admite dos compases; lo que excede continúa debajo.
-			val rowCapacity = (beatsPerBar * 2).coerceAtLeast(1)
+			val rowCapacity = (if (fixedGrid) beatsPerBar else beatsPerBar * 2).coerceAtLeast(1)
 			val timelineWidth = maxWidth
 			val density = LocalDensity.current
-			val measureCount = ceil(rowBeats / rowCapacity).toInt().coerceAtLeast(1)
-			val measures = remember(blocks, beatsPerBar) {
+			val measureCount = if (fixedGrid) 1 else ceil(rowBeats / rowCapacity).toInt().coerceAtLeast(1)
+			val measures = remember(blocks, beatsPerBar, fixedGrid, rowStart) {
 				List(measureCount) { m ->
 					val mStart = m * rowCapacity.toFloat()
 					val mEnd = minFloat(rowBeats, mStart + rowCapacity)
 					var eventStart = 0f
 					buildList {
 						for ((index, event) in blocks) {
+							if (fixedGrid) eventStart = (event.startBeat ?: rowStart.toFloat()) - rowStart.toFloat()
 							val eventEnd = eventStart + event.beats
 							val partStart = maxFloat(eventStart, mStart)
 							val partEnd = minFloat(eventEnd, mEnd)
@@ -266,25 +340,29 @@ fun TimelineRow(
 					Box(Modifier.fillMaxWidth()) {
 						// Arrastrar en cualquier segmento sigue moviendo el acorde original.
 						val currentParts by rememberUpdatedState(parts)
-						val dragMove by rememberUpdatedState(onMove)
+						val dragMove by rememberUpdatedState(onMoveAcross)
 						val rowDrag = if (!dragBlocks) Modifier else Modifier.pointerInput(Unit) {
 							var target = -1
-							var acc = 0f
-							detectHorizontalDragGestures(
+							var dx = 0f
+							var dy = 0f
+							detectDragGestures(
 								onDragStart = { p ->
-									acc = 0f
+									dx = 0f; dy = 0f
 									val x = p.x / scalePx
 									target = currentParts.firstOrNull { x >= it.start && x < it.start + it.beats }?.index ?: -1
 								},
-							) { change, dx ->
-								if (target < 0) return@detectHorizontalDragGestures
-								change.consume()
-								acc += dx
-								while (acc >= scalePx) { dragMove(target, 1f); acc -= scalePx }
-								while (acc <= -scalePx) { dragMove(target, -1f); acc += scalePx }
+								onDragEnd = {
+									if (target >= 0) dragMove?.invoke(target, dx / scalePx, (dy / with(density) { 76.dp.toPx() }).roundToInt())
+								},
+							) { change, amount ->
+								if (target < 0) return@detectDragGestures
+								change.consume(); dx += amount.x; dy += amount.y
 							}
 						}
-						Box(Modifier.width(timelineWidth).height(46.dp).then(rowDrag)) {
+						Box(Modifier.width(timelineWidth).height(46.dp).then(rowDrag)
+							.pointerInput(fixedGrid, onSelectGrid) {
+								if (fixedGrid && onSelectGrid != null) detectTapGestures { onSelectGrid() }
+							}) {
 							val grid = MaterialTheme.colorScheme.outline
 							val chordStarts = parts.filter { it.offset <= 1e-3f && !it.event.isRest }.map { it.start }
 							Canvas(Modifier.fillMaxSize()) {
@@ -312,6 +390,7 @@ fun TimelineRow(
 									continuesBefore = part.offset > 1e-3f,
 									continuesAfter = part.offset + part.beats < part.event.beats - 1e-3f,
 									labelBeats = part.event.beats,
+									creationToken = if (createdEventIndex == i) creationToken else 0,
 									progress = if (nowIndex == i && playhead != null) {
 										((playhead - rowStart - measureStart - part.start) / part.beats).toFloat().coerceIn(0f, 1f)
 									} else null,
@@ -336,8 +415,13 @@ private fun Block(
 	continuesBefore: Boolean = false, continuesAfter: Boolean = false,
 	onBlockDoubleTap: ((Int) -> Unit)? = null,
 	labelBeats: Float = e.beats,
+	creationToken: Int = 0,
 ) {
 	var menuAt by remember { mutableStateOf<Float?>(null) }
+	val creationAlpha = remember(creationToken) { Animatable(if (creationToken > 0) 0f else 1f) }
+	LaunchedEffect(creationToken) {
+		if (creationToken > 0) creationAlpha.animateTo(1f, tween(durationMillis = 1_000))
+	}
 	val move by rememberUpdatedState(onMove)
 	val blockShape = RoundedCornerShape(
 		topStart = if (continuesBefore) 0.dp else 8.dp,
@@ -347,7 +431,7 @@ private fun Block(
 	)
 	Box(
 		Modifier.offset(x = scale * startBeats).width(scale * e.beats).fillMaxHeight().padding(horizontal = 1.dp, vertical = 3.dp)
-			.alpha(if (dimUnmarked && !e.manual) 0.45f else 1f)
+			.alpha((if (dimUnmarked && !e.manual) 0.45f else 1f) * creationAlpha.value)
 			.clip(blockShape).background(blockColor(e))
 			.then(if (isSelected) Modifier.border(2.5.dp, Fun.Coral, blockShape) else Modifier)
 			.pointerInput(i) {
@@ -382,7 +466,7 @@ private fun Block(
 		)
 		// El punto identifica un acorde de la secuencia ya marcado; los bloques vacíos o personalizados no lo llevan.
 		if (showMarks && e.manual && !e.isRest && e.pos >= 0 && !continuesBefore) Box(
-			Modifier.align(Alignment.TopStart).padding(start = 6.dp, top = 4.dp).size(7.dp).clip(CircleShape).background(Fun.Purple),
+			Modifier.align(Alignment.TopStart).padding(start = 6.dp, top = 4.dp).size(7.dp).clip(CircleShape).background(Color(0xFF2196F3)),
 		)
 		// Asa para arrastrar el inicio del acorde.
 		var acc by remember { mutableFloatStateOf(0f) }

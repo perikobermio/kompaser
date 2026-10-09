@@ -40,11 +40,14 @@ fun ChordPicker(
 	songChords: List<String>, initial: String?, onDismiss: () -> Unit, onPick: (String) -> Unit, onDelete: (() -> Unit)? = null,
 	header: (@Composable () -> Unit)? = null,
 ) {
-	var root by remember { mutableStateOf<String?>(null) }
-	var type by remember { mutableStateOf("") }
+	var root by remember(initial) { mutableStateOf<String?>(null) }
+	var type by remember(initial) { mutableStateOf("") }
+	var moreExpanded by remember(initial) { mutableStateOf(false) }
 	AlertDialog(
 		onDismissRequest = onDismiss,
-		title = { Text(if (initial == null || initial == UNKNOWN_CHORD) "¿Qué acorde es?" else "Cambiar $initial por…") },
+		title = {
+			Text(if (initial.isNullOrBlank() || initial == UNKNOWN_CHORD) "¿Qué acorde es?" else "Cambiar $initial por…")
+		},
 		text = {
 			Column(Modifier.verticalScroll(rememberScrollState())) {
 				header?.invoke()
@@ -52,12 +55,17 @@ fun ChordPicker(
 				FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
 					for (c in songChords) SuggestionChip(onClick = { onPick(c) }, label = { Text(c, fontWeight = FontWeight.Bold, fontSize = 18.sp) })
 				}
-				Text("Otro", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(top = 12.dp))
-				FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-					for (r in ROOTS) FilterChip(root == r, { root = r }, label = { Text(r) })
-				}
-				FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-					for ((t, label) in TYPES) FilterChip(type == t, { type = t }, label = { Text(label) })
+				TextButton(
+					onClick = { moreExpanded = !moreExpanded },
+					modifier = Modifier.padding(top = 8.dp),
+				) { Text(if (moreExpanded) "MÁS ▲" else "MÁS ▼") }
+				if (moreExpanded) {
+					FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+						for (r in ROOTS) FilterChip(root == r, { root = r }, label = { Text(r) })
+					}
+					FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+						for ((t, label) in TYPES) FilterChip(type == t, { type = t }, label = { Text(label) })
+					}
 				}
 			}
 		},
@@ -68,7 +76,7 @@ fun ChordPicker(
 		},
 		dismissButton = {
 			Row {
-				if (onDelete != null) TextButton(onClick = onDelete) { Text("Suprimir") }
+				if (onDelete != null) TextButton(onClick = onDelete) { Text("Borrar") }
 				TextButton(onClick = onDismiss) { Text("Cancelar") }
 			}
 		},

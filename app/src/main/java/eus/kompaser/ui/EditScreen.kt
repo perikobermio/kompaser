@@ -81,10 +81,18 @@ fun EditScreen(song: Song, onBack: () -> Unit, onTap: () -> Unit, onSave: (Song)
 
 	fun result(): Song {
 		val o = parsedOffset()
-		val evs = song.shiftTimes(events, 0, o - baseOffset)
+		val newBpm = bpm.toFloatOrNull()?.coerceIn(30f, 260f) ?: song.bpm
+		val newBar = beatsPerBar.toFloat()
+		val evs = if (events.isNotEmpty() && events.all { it.startBeat != null }) {
+			events.map { event ->
+				val local = ((event.startBeat!! - event.line * song.beatsPerBar) / song.beatsPerBar).coerceIn(0f, 1f) * newBar
+				val start = event.line * newBar + local
+				event.copy(startBeat = start, t = o + start * 60.0 / newBpm)
+			}
+		} else song.shiftTimes(events, 0, o - baseOffset)
 		return song.copy(
 			title = title.trim(), artist = artist.trim(),
-			bpm = bpm.toFloatOrNull()?.coerceIn(30f, 260f) ?: song.bpm,
+			bpm = newBpm,
 			capo = capo.toIntOrNull()?.coerceIn(0, 12) ?: song.capo,
 			tuning = tuning,
 			beatsPerBar = beatsPerBar,
@@ -97,9 +105,9 @@ fun EditScreen(song: Song, onBack: () -> Unit, onTap: () -> Unit, onSave: (Song)
 
 	fun move(i: Int, d: Float) {
 		val before = events
-		events = Timeline.moveStart(events, i, d, secPerBeat)
+		events = Timeline.moveStart(events, i, d, secPerBeat, song.beatsPerBar)
 		// Mover el primer acorde es mover el inicio de la canción en el vídeo.
-		if (i == 0 && events !== before) {
+		if (i == 0 && events !== before && events.firstOrNull()?.startBeat == null) {
 			val o = events[0].t ?: (parsedOffset() + d * secPerBeat)
 			offset = fmtSec(o)
 			baseOffset = o
@@ -127,9 +135,15 @@ fun EditScreen(song: Song, onBack: () -> Unit, onTap: () -> Unit, onSave: (Song)
 		},
 	) { pad ->
 		val starts = remember(events) {
-			DoubleArray(events.size + 1).also { a -> events.forEachIndexed { k, e -> a[k + 1] = a[k] + e.beats } }
+			DoubleArray(events.size + 1).also { a ->
+				if (events.isNotEmpty() && events.all { it.startBeat != null }) {
+					events.forEachIndexed { k, e -> a[k] = e.startBeat!!.toDouble() }
+					a[events.size] = events.maxOf { it.startBeat!!.toDouble() + it.beats }
+				} else events.forEachIndexed { k, e -> a[k + 1] = a[k] + e.beats }
+			}
 		}
-		val timelineRows = remember(events, song.lines) { timelineDisplayRows(song.lines, events) }
+		val fixedGrid = events.isNotEmpty() && events.all { it.startBeat != null }
+		val timelineRows = remember(events, song.lines) { timelineDisplayRows(song.lines, events, song.beatsPerBar) }
 		LazyColumn(Modifier.padding(pad).padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
 			item {
 				Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -187,16 +201,17 @@ fun EditScreen(song: Song, onBack: () -> Unit, onTap: () -> Unit, onSave: (Song)
 					HorizontalDivider()
 				}
 			}
-			itemsIndexed(timelineRows) { _, row ->
+		itemsIndexed(timelineRows) { rowIndex, row ->
 				val line = row.lineIndex?.let { song.lines[it] } ?: SongLine(null, "", emptyList())
 				val blocks = row.blocks
 				val first = blocks.firstOrNull()?.index
 				val t = first?.let { events[it].t }
 				TimelineRow(
-					line, blocks, rowStart = first?.let { starts[it] } ?: 0.0, beatsPerBar = beatsPerBar, selected = selected,
+					line, blocks, rowStart = if (fixedGrid) rowIndex * beatsPerBar.toDouble() else first?.let { starts[it] } ?: 0.0, beatsPerBar = beatsPerBar, selected = selected,
 					timeLabel = t?.let { "%d:%02d".format((it / 60).toInt(), (it % 60).toInt()) },
 					onSelect = { selected = it },
 					onMove = ::move,
+					fixedGrid = fixedGrid,
 					showMarks = true,
 					onInsert = { i, at, chord ->
 						events = Timeline.split(events, i, at, chord, secPerBeat)

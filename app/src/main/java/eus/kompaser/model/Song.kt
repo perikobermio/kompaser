@@ -31,18 +31,30 @@ data class ChordShape(val frets: List<Int>, val fingers: List<Int>, val barre: B
  */
 data class ChordEvent(
 	val chord: String, val beats: Float, val line: Int, val pos: Int, val t: Double? = null, val manual: Boolean = false,
+	/** Absolute BPM-grid beat at which this event starts. Null keeps compatibility with older songs. */
+	val startBeat: Float? = null,
+	/** Source lyric line/position identity, stable when the event is moved to another row. */
+	val sourceLine: Int? = null,
+	/** Marks the chord that anchors a stanza to the start of a timeline row. */
+	val sectionStart: Boolean = false,
 ) {
 	val isRest: Boolean get() = chord.isEmpty()
 
 	fun toJson(): JSONObject = JSONObject().put("c", chord).put("b", beats.toDouble()).put("l", line).put("p", pos)
 		.also { o -> t?.let { o.put("t", it) } }
 		.also { o -> if (manual) o.put("m", true) }
+		.also { o -> startBeat?.let { o.put("sb", it.toDouble()) } }
+		.also { o -> sourceLine?.let { o.put("sl", it) } }
+		.also { o -> if (sectionStart) o.put("ss", true) }
 
 	companion object {
 		fun fromJson(o: JSONObject) = ChordEvent(
 			o.getString("c"), o.getDouble("b").toFloat(), o.getInt("l"), o.getInt("p"),
 			if (o.has("t") && !o.isNull("t")) o.getDouble("t") else null,
 			o.optBoolean("m"),
+			if (o.has("sb") && !o.isNull("sb")) o.getDouble("sb").toFloat() else null,
+			if (o.has("sl") && !o.isNull("sl")) o.getInt("sl") else null,
+			o.optBoolean("ss"),
 		)
 	}
 }
@@ -70,7 +82,12 @@ data class Song(
 
 	/** Tiempo (en pulsos) en el que empieza cada acorde; el último elemento es la duración total. */
 	val starts: DoubleArray by lazy {
-		DoubleArray(events.size + 1).also { a -> events.forEachIndexed { i, e -> a[i + 1] = a[i] + e.beats } }
+		DoubleArray(events.size + 1).also { a ->
+			if (events.isNotEmpty() && events.all { it.startBeat != null }) {
+				events.forEachIndexed { i, e -> a[i] = e.startBeat!!.toDouble() }
+				a[events.size] = events.maxOf { it.startBeat!!.toDouble() + it.beats }
+			} else events.forEachIndexed { i, e -> a[i + 1] = a[i] + e.beats }
+		}
 	}
 
 	/**

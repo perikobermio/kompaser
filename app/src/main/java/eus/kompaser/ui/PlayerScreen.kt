@@ -147,17 +147,10 @@ fun PlayerScreen(
 
 	fun beatNow(now: Long): Double = if (playing) clock.beat + (now - clock.nanos) / 60e9 * bpm else beat
 
-	/** Convierte el instante real del vídeo a la rejilla de pulsos usando las marcas de cada evento. */
+	/** El BPM define la rejilla; el vídeo solo aporta el reloj real y su offset inicial. */
 	fun beatAtVideoTime(second: Double): Double? {
-		if (events.isEmpty() || events.any { it.t == null }) return null
-		val firstTime = events.first().t!!
-		val index = events.indexOfLast { it.t!! <= second }
-		if (index < 0) return (second - firstTime) * bpm / 60.0
-		val event = events[index]
-		val start = event.t!!
-		val end = events.getOrNull(index + 1)?.t ?: (start + event.beats * 60.0 / bpm)
-		val fraction = ((second - start) / (end - start).coerceAtLeast(1e-3)).coerceIn(0.0, 1.0)
-		return starts[index] + fraction * event.beats
+		if (events.isEmpty()) return null
+		return (second - song.videoOffsetMs / 1000.0) * bpm / 60.0
 	}
 
 	fun play() {
@@ -188,7 +181,7 @@ fun PlayerScreen(
 		val index = i.coerceIn(0, events.size - 1)
 		val b = starts[index]
 		if (videoOn) {
-			val sec = (events[index].t ?: (song.videoOffsetMs / 1000.0 + b * 60.0 / bpm)).toFloat().coerceAtLeast(0f)
+			val sec = (song.videoOffsetMs / 1000.0 + b * 60.0 / bpm).toFloat().coerceAtLeast(0f)
 			video.player?.seekTo(sec)
 			video.update(sec, force = true)
 			videoClockStarted = true
@@ -223,14 +216,13 @@ fun PlayerScreen(
 	/** Doble toque en un acorde: empieza un tiempo antes; triple: un tiempo después. Se guarda al momento. */
 	fun nudge(i: Int, d: Float) {
 		val e = events.getOrNull(i) ?: return
-		val moved = Timeline.moveStart(events, i, d, 60.0 / bpm)
+		val moved = Timeline.moveStart(events, i, d, 60.0 / bpm, song.beatsPerBar)
 		val name = if (e.isRest) "Pausa" else e.chord
 		if (moved === events) {
 			notice = "$name: no se puede mover más"
 			return
 		}
-		val offsetMs = if (i == 0) ((moved[0].t ?: (song.videoOffsetMs / 1000.0 + d * 60.0 / bpm)) * 1000).toLong() else song.videoOffsetMs
-		onSave(song.copy(events = moved, videoOffsetMs = offsetMs, updatedAt = System.currentTimeMillis()))
+		onSave(song.copy(events = moved, updatedAt = System.currentTimeMillis()))
 		val amount = if (abs(d) == 1f) "1 tiempo" else if (abs(d) == 0.5f) "½ tiempo" else "${abs(d)} tiempos"
 		notice = "$name · $amount ${if (d < 0) "antes" else "después"}"
 	}
@@ -769,7 +761,7 @@ private fun TimelinePlayer(
 ) {
 	val events = song.events
 	val starts = song.starts
-	val rows = remember(events, song.lines) { timelineDisplayRows(song.lines, events) }
+	val rows = remember(events, song.lines, song.beatsPerBar) { timelineDisplayRows(song.lines, events, song.beatsPerBar) }
 	val listState = rememberLazyListState()
 	val currentRow = nowIndex?.let { i -> rows.indexOfFirst { row -> row.blocks.any { it.index == i } } } ?: -1
 	LaunchedEffect(currentRow) {
@@ -780,16 +772,19 @@ private fun TimelinePlayer(
 			val row = rows[r]
 			val li = row.lineIndex
 			val blocks = row.blocks
-			val line = li?.let { song.lines[it] } ?: SongLine(null, "", emptyList())
+			val line = li?.let { song.lines.getOrNull(it) } ?: SongLine(null, "", emptyList())
 			val first = blocks.firstOrNull()?.index
-			val rowStart = first?.let { starts[it] } ?: 0.0
-			val rowEnd = blocks.lastOrNull()?.let { starts[it.index + 1] } ?: rowStart
+			val fixedGrid = events.isNotEmpty() && events.all { it.startBeat != null }
+			val rowStart = if (fixedGrid) r * song.beatsPerBar.toDouble() else first?.let { starts[it] } ?: 0.0
+			val rowEnd = if (fixedGrid) rowStart + song.beatsPerBar else blocks.lastOrNull()?.let { starts[it.index + 1] } ?: rowStart
 			val inRow = beat >= rowStart && beat < rowEnd
-			val t = first?.takeIf { song.youtubeId != null }?.let { song.videoOffsetMs / 1000.0 + starts[it] * 60.0 / song.bpm }
+			val t = if (song.youtubeId == null) null else if (fixedGrid) {
+				song.videoOffsetMs / 1000.0 + rowStart * 60.0 / song.bpm
+			} else first?.let { song.videoOffsetMs / 1000.0 + starts[it] * 60.0 / song.bpm }
 			TimelineRow(
 				line, blocks, rowStart = rowStart, beatsPerBar = song.beatsPerBar, selected = selected,
 				timeLabel = t?.let { "%d:%02d".format((it / 60).toInt(), (it % 60).toInt()) },
-				onSelect = onSelect, onMove = onMove, onInsert = onInsert,
+				onSelect = onSelect, onMove = onMove, onInsert = onInsert, fixedGrid = fixedGrid,
 				onBlockTap = onSeek, longPressEnabled = false,
 				nowIndex = if (inRow) nowIndex else null, playhead = if (inRow) beat else null,
 				// Todo lo anterior al acorde que suena queda iluminado.
